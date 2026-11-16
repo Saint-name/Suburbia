@@ -250,3 +250,25 @@ table.final td b { color: var(--accent); font-size: 1.15rem; }
 .basic-hex { width: 64px; height: auto; flex: none; }
 .info-hex { width: 180px; height: auto; flex: none; }
 .card { min-height: 0; }
+
+/* Suburbia Inc. (1.0.4) */
+.bd { fill: #8b5e34; stroke: #8b5e34; stroke-width: 1.5; }
+.bd.lake { fill: #3d9fd3; stroke: #3d9fd3; }
+.bd.ghost { opacity: .75; }
+.border-strip.selectable .bd { cursor: pointer; }
+.bd-notch { stroke: #ffe27a; stroke-width: 4; stroke-linecap: round; pointer-events: none; }
+.bslot { stroke: #d9a066; }
+.slot-plus.b { fill: #d9a066; font-size: 18px; }
+.inc-panel .bcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.bcard { background: var(--bg2); border-radius: 10px; padding: 6px; border: 2px solid transparent; cursor: pointer; }
+.bcard.selected { border-color: var(--accent); }
+.bcard .border-svg { width: 100%; height: auto; display: block; }
+.bcard small { color: var(--muted); }
+.bonus-row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.bonus-tile { flex: 1; min-width: 140px; background: var(--bg2); border-radius: 8px; padding: 6px 8px; font-size: .8rem; border-left: 4px solid #6bd0ff; }
+.bonus-tile.ch { border-left-color: #ff9b6b; }
+.bonus-tile.done { opacity: .55; }
+.exp-toggle { display: flex; align-items: center; gap: 8px; background: var(--bg2); border-radius: 10px; padding: 8px 12px; margin: 8px 0; cursor: pointer; }
+.exp-toggle input { width: 18px; height: 18px; }
+.law-tag { color: var(--accent); font-size: .75em; }
+.tB { background: rgba(139,94,52,.45); }

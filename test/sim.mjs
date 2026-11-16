@@ -1,9 +1,11 @@
 import { createGame, chooseGoal, applyAction, viewFor } from '../src/engine/engine.js';
 import { chooseBotAction, chooseBotGoal } from '../src/engine/bots.js';
+import { TILE_BY_ID } from '../src/engine/tiles.js';
+const stats = { borders: 0, incTiles: 0, bonus: 0, challenge: 0 };
 
 function play(levels, seed) {
   const players = levels.map((lv, i) => ({ id: `p${i}`, name: `${lv}${i}`, bot: lv }));
-  const s = createGame({ players, seed });
+  const s = createGame({ players, seed, expansions: { inc: process.argv[3] === 'inc' } });
   s.players.forEach((p, i) => chooseGoal(s, p.id, chooseBotGoal(s, i, p.bot)));
   let guard = 0; let maxMs = 0;
   while (s.phase === 'play') {
@@ -23,6 +25,8 @@ function play(levels, seed) {
     if (++guard > 400) throw new Error('game did not end');
   }
   JSON.stringify(viewFor(s, 'p0'));
+  for (const p of s.players) { stats.borders += (p.borders || []).length; for (const r of Object.values(p.tiles)) if (!r.lake && r.id && TILE_BY_ID[r.id]?.exp) stats.incTiles++; }
+  if (s.bonusDone) stats.bonus++; if (s.challengeDone) stats.challenge++;
   return { s, turns: s.turn + 1, maxMs };
 }
 
@@ -40,5 +44,5 @@ for (let g = 0; g < N; g++) {
 }
 const avg = (a) => (a.reduce((x, y) => x + y, 0) / a.length).toFixed(1);
 console.log('games', games, 'avg turns', (turns / games).toFixed(1), 'max bot ms', maxMs.toFixed(0));
-console.log('wins', wins);
+console.log('wins', wins, 'inc stats', stats);
 for (const k of Object.keys(pops)) console.log(k, 'avg final pop', avg(pops[k]), 'min', Math.min(...pops[k]), 'max', Math.max(...pops[k]));

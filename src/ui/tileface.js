@@ -1,10 +1,15 @@
 // Tile face renderer: layout modelled on the physical tiles
 // (name banner on top, cost on the left, immediate effect top-right, conditional effect box at the bottom).
-import { TILE_BY_ID, ICON_INFO } from '../engine/tiles.js';
+import { TILE_BY_ID, ICON_INFO, BORDER_BY_ID } from '../engine/tiles.js';
 
-const TYPE_COLOR = { R: '#5fae4e', C: '#3f86c9', I: '#d9b43a', V: '#8f969c' };
-const TYPE_DARK = { R: '#2f6b25', C: '#1f4f7f', I: '#8a6d12', V: '#4d5357' };
-const TYPE_EMBLEM = { R: '🏘️', C: '🏬', I: '🏭', V: '🏛️' };
+const TYPE_COLOR = { R: '#5fae4e', C: '#3f86c9', I: '#d9b43a', V: '#8f969c', X: '#3a3a42' };
+const TYPE_DARK = { R: '#2f6b25', C: '#1f4f7f', I: '#8a6d12', V: '#4d5357', X: '#111114' };
+const TYPE_EMBLEM = { R: '🏘️', C: '🏬', I: '🏭', V: '🏛️', X: '🚧' };
+let PLAYERS_N = 4;
+export const setPlayerCount = (n) => { PLAYERS_N = n || 4; };
+const costLabel = (tl) => (tl.costPerPlayer ? `$${tl.costPerPlayer * PLAYERS_N}` : `$${tl.cost}`);
+const SPECIAL_ROW = { lawOffice: '⚖️ 동점 목표 1개 획득', planner: '🔁 다음 턴부터 무료 교체', redistrict: '상대마다 인구 5 뺏기' };
+const REQ_ROW = { pop2: '인구 2↑ 필요', adjBorder: '보더 인접 필수', adjLake: '호수 인접 필수' };
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const sgn = (n) => (n > 0 ? `+${n}` : `${n}`);
 
@@ -46,6 +51,9 @@ function miniHex(type, x, y, s = 1) {
 
 // targets of a condition, drawn left→right from x; returns [svg, width]
 function targets(cn, x, y, s) {
+  if (cn.border) {
+    return [`<rect x="${x + 1 * s}" y="${y - 5 * s}" width="${16 * s}" height="${10 * s}" rx="${2 * s}" fill="#8b5e34" stroke="#fff" stroke-width="${0.8 * s}"/><path d="M${x + 3 * s},${y - 5 * s} l3,4 l3,-4 l3,4 l3,-4" fill="none" stroke="#fff" stroke-width="${0.8 * s}"/>`, 19 * s];
+  }
   if (cn.icon) {
     return [`<circle cx="${x + 7 * s}" cy="${y}" r="${7 * s}" fill="#fff" stroke="#222" stroke-width="${0.8 * s}"/><text x="${x + 7 * s}" y="${y + 3.6 * s}" font-size="${9 * s}">${ICON_INFO[cn.icon].glyph}</text>`, 15 * s];
   }
@@ -121,7 +129,7 @@ export function tileFace(rec, cx, cy, R, opts = {}) {
     if (rec.inv) {
       out.push(`<polygon points="${hexPts(cxL, cyL, 13 * s)}" fill="#ffd447" stroke="#7a5a00" stroke-width="${1.4 * s}"/><text x="${cxL}" y="${cyL + 3.8 * s}" font-size="${10 * s}" fill="#3b2a00" class="tf-t b">2×</text>`);
     } else {
-      out.push(`<text x="${cxL}" y="${cyL + 4 * s}" font-size="${12 * s}" fill="#fff" class="tf-t b cost">$${tl.cost}</text>`);
+      out.push(`<text x="${cxL}" y="${cyL + 4 * s}" font-size="${12 * s}" fill="#fff" class="tf-t b cost">${costLabel(tl)}</text>`);
     }
     // immediate effect, top right
     const imm = ['income', 'rep', 'pop', 'money'].filter((k) => tl.imm[k]);
@@ -133,9 +141,16 @@ export function tileFace(rec, cx, cy, R, opts = {}) {
       if (rows >= 2) { bx = imm.length ? cx + 0.6 * R - 20 * s : cx + 0.6 * R; by2 = cy - 0.3 * R; emX = cx - 9 * s; }
       out.push(`<circle cx="${bx}" cy="${by2}" r="${8 * s}" fill="#fff" stroke="#222" stroke-width="${0.8 * s}"/><text x="${bx}" y="${by2 + 3.6 * s}" font-size="${9.5 * s}" class="tf-t">${ICON_INFO[tl.icon].glyph}</text>`);
     }
+    if (tl.req) out.push(`<text x="${cx}" y="${by + bh + 9 * s}" font-size="${7.5 * s}" fill="#ffe27a" class="tf-t b cost">${REQ_ROW[tl.req]}</text>`);
+    const specialRow = tl.special && SPECIAL_ROW[tl.special];
     // conditional box
     const emblemY = rows >= 3 ? cy - 0.42 * R : rows >= 2 ? cy - 0.3 * R : cy - 0.12 * R;
     out.push(`<text x="${emX}" y="${emblemY + 8 * s}" font-size="${(rows >= 2 ? 17 : 22) * s}" class="tf-t emblem">${TYPE_EMBLEM[tl.type]}</text>`);
+    if (specialRow) {
+      const boxH = 16 * s; const boxY = cy + H - boxH - 5 * s;
+      out.push(`<rect x="${cx - 0.7 * R}" y="${boxY}" width="${1.4 * R}" height="${boxH}" rx="${4 * s}" fill="rgba(15,15,25,.82)" stroke="rgba(255,255,255,.35)" stroke-width="${0.7 * s}"/>`);
+      out.push(`<text x="${cx}" y="${boxY + boxH / 2 + 3 * s}" font-size="${7.5 * s}" fill="#fff" class="tf-t b" textLength="${(1.3 * R).toFixed(1)}" lengthAdjust="spacingAndGlyphs">${esc(specialRow)}</text>`);
+    }
     if (rows) {
       const rh = (rows >= 3 ? 13.5 : 15) * s;
       const boxH = rows * rh + 4 * s;
@@ -147,6 +162,32 @@ export function tileFace(rec, cx, cy, R, opts = {}) {
   }
   if (opts.last) out.push(`<polygon points="${hexPts(cx, cy, R - 1)}" class="hex-last"/>`);
   return out.join('');
+}
+
+// Border label (name + effects), centred at (cx, cy)
+export function borderLabel(id, lake, cx, cy, s = 1) {
+  const def = BORDER_BY_ID[id];
+  const out = [];
+  if (lake) {
+    out.push(`<text x="${cx}" y="${cy - 4 * s}" font-size="${11 * s}" fill="#fff" class="tf-t b cost">호수 보더</text>`);
+    out.push(`<g transform="translate(${cx - 18 * s},${cy + 11 * s})">${resIcon('money', 2, 0, 0, s * 0.85)}</g><text x="${cx + 8 * s}" y="${cy + 14 * s}" font-size="${8 * s}" fill="#fff" class="tf-t b cost">홈마다</text>`);
+    return out.join('');
+  }
+  out.push(`<text x="${cx}" y="${cy - 10 * s}" font-size="${11 * s}" fill="#fff" class="tf-t b cost">${esc(def.ko)}</text>`);
+  const imm = ['income', 'rep', 'pop', 'money'].filter((k) => def.imm[k]);
+  let x = cx - (imm.length ? 34 : 0) * s;
+  imm.forEach((k) => { out.push(`<g transform="translate(${x},${cy + 8 * s})">${resIcon(k, def.imm[k], 0, 0, s * 0.85)}</g>`); x += 20 * s; });
+  def.cond.forEach((cn) => out.push(condRow({ ...cn, scope: 'adj' }, cx + (imm.length ? 18 : 0) * s, cy + 8 * s, s)));
+  return out.join('');
+}
+
+export function borderCardSvg(id, width = 150) {
+  const W = 150; const Hh = 64;
+  const def = BORDER_BY_ID[id];
+  return `<svg viewBox="0 0 ${W} ${Hh}" width="${width}" class="border-svg">
+    <path d="M0,10 L15,0 L30,10 L45,0 L60,10 L75,0 L90,10 L105,0 L120,10 L135,0 L150,10 L150,${Hh} L0,${Hh} Z" fill="#8b5e34" stroke="#3a2410" stroke-width="2"/>
+    <text x="10" y="${Hh - 8}" font-size="13" fill="#ffe27a" class="tf-t b cost" style="text-anchor:start">$${def.cost}</text>
+    ${borderLabel(id, false, W / 2 + 10, 32, 1)}</svg>`;
 }
 
 export function tileSvg(rec, size = 100, cls = 'tile-svg') {

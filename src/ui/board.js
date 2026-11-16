@@ -1,7 +1,7 @@
 // SVG rendering of a borough (flat-top hexes, axial coordinates)
 import { TILE_BY_ID, TYPE_INFO, ICON_INFO } from '../engine/tiles.js';
 import { parseKey } from '../engine/engine.js';
-import { tileFace, tileSvg } from './tileface.js';
+import { tileFace, tileSvg, borderLabel } from './tileface.js';
 
 const R = 52;
 const H = Math.sqrt(3) * R;
@@ -42,11 +42,32 @@ export function tileHexSvg(rec, cx, cy, opts = {}) {
   return out.join('');
 }
 
-// player: view player; opts: { cells:Set (placeable), picked, selectable:Set (invest targets), lastCell, ghost }
+// A border strip: 4 hexes + accent lines along the notched edge facing its slots
+function borderSvg(b, opts = {}) {
+  const out = [];
+  const cls = `${b.lake ? 'bd lake' : 'bd'} ${opts.ghost ? 'ghost' : ''}`;
+  out.push(`<g class="border-strip ${opts.selectable ? 'selectable' : ''}">`);
+  for (const c of b.cells) { const [x, y] = center(c); out.push(`<polygon points="${corners(x, y, R)}" class="${cls}" data-cell="${c}"/>`); }
+  b.cells.forEach((c, i) => {
+    const [x1, y1] = center(c); const [x2, y2] = center(b.slots[i]);
+    const mx = (x1 + x2) / 2; const my = (y1 + y2) / 2; const dx = (y2 - y1) / H * R * 0.45; const dy = -(x2 - x1) / H * R * 0.45;
+    out.push(`<line x1="${(mx - dx).toFixed(1)}" y1="${(my - dy).toFixed(1)}" x2="${(mx + dx).toFixed(1)}" y2="${(my + dy).toFixed(1)}" class="bd-notch"/>`);
+  });
+  const cx = b.cells.reduce((a, c) => a + center(c)[0], 0) / 4; const cy = b.cells.reduce((a, c) => a + center(c)[1], 0) / 4;
+  out.push(`<g pointer-events="none">${borderLabel(b.id, b.lake, cx, cy, 1.15)}</g>`);
+  if (b.inv) out.push(`<g class="inv" pointer-events="none"><circle cx="${cx - 48}" cy="${cy - 14}" r="11"/><text x="${cx - 48}" y="${cy - 10}">×2</text></g>`);
+  if (opts.selectable || opts.picked) for (const c of b.cells) { const [x, y] = center(c); out.push(`<polygon points="${corners(x, y, R - 2)}" class="hex-sel" />`); }
+  out.push('</g>');
+  return out.join('');
+}
+
+// player: view player; opts: { cells:Set (placeable), picked, selectable:Set (invest targets), lastCell, ghost,
+//   borderCells:Set (cells that can start a border), borderGhost: {id, lake, cells, slots} }
 export function boroughSvg(player, opts = {}) {
   const keys = Object.keys(player.tiles);
   const cells = opts.cells ? [...opts.cells] : [];
-  const all = [...keys, ...cells];
+  const bcells = opts.borderCells ? [...opts.borderCells] : [];
+  const all = [...keys, ...cells, ...bcells, ...(player.borders || []).flatMap((b) => b.cells), ...(opts.borderGhost?.cells || [])];
   const yTop = -H / 2 - 100;
   let minX = -5.2 * R; let maxX = 5.2 * R; let minY = yTop - 34; let maxY = H * 3;
   for (const k of all) {
@@ -57,6 +78,13 @@ export function boroughSvg(player, opts = {}) {
   const w = maxX - minX; const h = maxY - minY;
   const out = [`<svg class="borough" viewBox="${minX.toFixed(0)} ${minY.toFixed(0)} ${w.toFixed(0)} ${h.toFixed(0)}" preserveAspectRatio="xMidYMin meet" xmlns="http://www.w3.org/2000/svg">`];
   out.push(boroughBoardSvg(player, yTop));
+  for (const b of player.borders || []) out.push(borderSvg(b, { selectable: opts.selectable?.has(b.cells[0]), picked: opts.picked && b.cells.includes(opts.picked) }));
+  for (const k of bcells) {
+    if (opts.borderGhost?.cells.includes(k)) continue;
+    const [x, y] = center(k);
+    out.push(`<g class="slot" data-cell="${k}"><polygon points="${corners(x, y, R - 3)}" class="hex-slot bslot"/><text x="${x}" y="${y + 5}" class="slot-plus b">▦</text></g>`);
+  }
+  if (opts.borderGhost) out.push(borderSvg(opts.borderGhost, { ghost: true }));
   for (const k of keys) {
     const [x, y] = center(k);
     const sel = opts.selectable?.has(k);

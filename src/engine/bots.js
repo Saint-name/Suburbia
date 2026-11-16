@@ -1,9 +1,9 @@
 // Bots: easy / normal / hard
 import {
   placementCells, performAction, clone, tileCostAt, estimateTurnsLeft, redLinesBetween,
-  goalLeaders, neighborsOf, endTurn,
+  goalLeaders, neighborsOf, endTurn, borderCandidates, costOf, borderAt, openSpace,
 } from './engine.js';
-import { TILE_BY_ID, BASIC_IDS, MARKET_COSTS, GOAL_BY_ID } from './tiles.js';
+import { TILE_BY_ID, BASIC_IDS, MARKET_COSTS, GOAL_BY_ID, BORDER_BY_ID } from './tiles.js';
 
 export const BOT_LEVELS = { easy: '쉬움', normal: '보통', hard: '어려움' };
 const BOT_NAMES = ['데일', '로봇 김', '알파 시장', '오토 박', '비트 리', '헥사', '심시티', '타일봇'];
@@ -91,7 +91,11 @@ for (const tl of Object.values(TILE_BY_ID)) if (tl.stack !== 'basic') (LETTER_PO
 function upcomingPool(s) {
   const counts = s.stackCounts || { A: s.stacks.A.length, B: s.stacks.B.length, C: s.stacks.C.length };
   const pool = [];
-  for (const L of ['A', 'B', 'C']) if (counts[L] > 0) pool.push(...LETTER_POOL[L].map((tl) => [tl, counts[L] / LETTER_POOL[L].length]));
+  for (const L of ['A', 'B', 'C']) {
+    if (counts[L] <= 0) continue;
+    const list = LETTER_POOL[L].filter((tl) => !tl.exp || s.exp?.[tl.exp]);
+    pool.push(...list.map((tl) => [tl, counts[L] / list.length]));
+  }
   return pool;
 }
 function fracMatching(pool, cn) {
@@ -142,6 +146,11 @@ function evaluate(s, pi, level, T, progress, pool) {
   const moneyW = cf.mw0 + cf.mw1 * Math.min(1, (T - 1) / 10);
   let v = projectPlayer(s.players[pi], T, moneyW);
   if (cf.future) v += cf.future * futureValue(s, pi, T, moneyW, pool || upcomingPool(s));
+  // keep room to build: borders can wall a borough in
+  if (s.players[pi].borders?.length && T > 2) {
+    const room = openSpace(s.players[pi]);
+    if (room < 14) v -= (14 - room) * 1.2 * Math.min(1, T / 5);
+  }
   if (cf.goals) v += cf.goals * goalValue(s, pi, progress, cf.full);
   if (cf.oppW) {
     let best = -Infinity;
@@ -183,10 +192,40 @@ function candidates(s, pi, level) {
   }
   if (cfgOf(level).invest && p.investLeft > 0 && disc !== undefined) {
     for (const [cell, r] of Object.entries(p.tiles)) {
-      if (r.inv) continue;
-      const cost = r.lake ? 0 : TILE_BY_ID[r.id].cost;
+      if (r.inv || (!r.lake && TILE_BY_ID[r.id].noInvest)) continue;
+      const cost = r.lake ? 0 : costOf(s, r.id);
       if (p.money >= cost + MARKET_COSTS[disc]) out.push({ type: 'invest', cell, discard: disc });
     }
+    for (const b of p.borders || []) {
+      if (b.inv) continue;
+      const cost = b.lake ? 0 : BORDER_BY_ID[b.id].cost;
+      if (p.money >= cost + MARKET_COSTS[disc]) out.push({ type: 'invest', cell: b.cells[0], discard: disc });
+    }
+  }
+  // Suburbia Inc. borders: keep only the most promising positions of each open border
+  if (s.exp?.inc && disc !== undefined && !cfgOf(level).greedy) {
+    const resW = { income: 3, rep: 3, pop: 1, money: 0.3 };
+    s.borderOpen.forEach((id, idx) => {
+      if (!id) return; // unknown (hidden) border during look-ahead
+      const def = BORDER_BY_ID[id];
+      if (p.money >= def.cost + MARKET_COSTS[disc]) {
+        const scored = borderCandidates(s, pi, false).map((c) => {
+          let v = 0;
+          for (const cn of def.cond) {
+            const n = c.slots.filter((k) => { const r = p.tiles[k]; return r && (r.lake ? cn.lake : cn.types.includes(TILE_BY_ID[r.id].type)); }).length;
+            const free = c.slots.filter((k) => !p.tiles[k] && !borderAt(p, k)).length;
+            v += cn.amt * resW[cn.res] * (n + (cn.amt > 0 ? 0.3 : 0.6) * free);
+          }
+          return [v, c];
+        }).sort((x, y) => y[0] - x[0]).slice(0, 3);
+        for (const [, c] of scored) out.push({ type: 'border', idx, c0: c.c0, orient: c.orient, lake: false, discard: disc });
+      }
+      if (p.money >= MARKET_COSTS[disc]) {
+        const lakes = borderCandidates(s, pi, true).map((c) => [c.slots.filter((k) => p.tiles[k] && !p.tiles[k].lake).length, c])
+          .sort((x, y) => y[0] - x[0]).slice(0, 1);
+        for (const [n, c] of lakes) if (n >= 2) out.push({ type: 'border', idx, c0: c.c0, orient: c.orient, lake: true, discard: disc });
+      }
+    });
   }
   return out;
 }
@@ -194,7 +233,13 @@ function candidates(s, pi, level) {
 // Which tile to remove from the market when forced to discard (hard: deny next player)
 function bestDiscard(s, pi, level, a) {
   const p = s.players[pi];
-  const spend = a.type === 'basic' ? TILE_BY_ID[a.kind].cost : (p.tiles[a.cell]?.lake ? 0 : TILE_BY_ID[p.tiles[a.cell].id].cost);
+  let spend = 0;
+  if (a.type === 'basic') spend = TILE_BY_ID[a.kind].cost;
+  else if (a.type === 'border') spend = a.lake ? 0 : BORDER_BY_ID[s.borderOpen[a.idx]].cost;
+  else if (a.type === 'invest') {
+    const r = p.tiles[a.cell] || borderAt(p, a.cell);
+    spend = r.lake ? 0 : r.border ? BORDER_BY_ID[r.id].cost : costOf(s, r.id);
+  }
   const options = cheapestDiscards(s, p.money - spend, cfgOf(level).deny ? 3 : 1);
   if (!cfgOf(level).deny || options.length <= 1) return options[0] ?? a.discard;
   const n = s.players.length;
@@ -271,6 +316,7 @@ export function botView(s, pi) {
   v.players.forEach((p, i) => { if (i !== pi) { p.privateGoal = null; p.goalOptions = []; } });
   v.stacks = { A: Array(s.stacks.A.length).fill(null), B: Array(s.stacks.B.length).fill(null), C: Array(s.stacks.C.length).fill(null) };
   v.rng = 0; v.seed = 0;
+  if (v.borderDeck) v.borderDeck = v.borderDeck.map(() => null);
   return v;
 }
 
@@ -290,12 +336,23 @@ export function chooseBotAction(state, pi, level = 'normal') {
       if (v > bestV) { bestV = v; best = e.a; }
     }
   }
-  if (!best) {
-    // fallback: any legal lake at an affordable slot
-    const cells = placementCells(s, pi);
-    for (let slot = 6; slot >= 0; slot--) if (s.market[slot] && MARKET_COSTS[slot] <= s.players[pi].money) return { type: 'lake', slot, cell: cells[0] };
-    return { type: 'lake', slot: 6, cell: cells[0] };
+  const legal = (x) => x && performAction(clone(s), pi, x).ok;
+  if (best && (best.type === 'basic' || best.type === 'invest' || best.type === 'border')) {
+    const swapped = { ...best, discard: bestDiscard(s, pi, level, best) };
+    if (legal(swapped)) best = swapped; // the denial discard may cost more than the bot can pay
   }
-  if (best.type === 'basic' || best.type === 'invest') best = { ...best, discard: bestDiscard(s, pi, level, best) };
-  return best;
+  if (legal(best)) return best;
+  for (const e of scored) if (legal(e.a)) return e.a;
+  return anyLegalAction(s, pi);
+}
+
+// Last resort: the cheapest legal action there is (a lake at the cheapest market slot).
+export function anyLegalAction(s, pi) {
+  const cells = placementCells(s, pi);
+  const slots = [0, 1, 2, 3, 4, 5, 6].filter((i) => s.market[i]).sort((x, y) => MARKET_COSTS[x] - MARKET_COSTS[y]);
+  for (const slot of slots) for (const cell of cells) {
+    const a = { type: 'lake', slot, cell };
+    if (performAction(clone(s), pi, a).ok) return a;
+  }
+  return { type: 'pass', discard: slots[slots.length - 1] ?? 6 };
 }

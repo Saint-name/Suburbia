@@ -1,5 +1,6 @@
-import { TILE_BY_ID, TYPE_INFO, ICON_INFO, GOAL_BY_ID, METRIC_KO, MARKET_COSTS, BASIC_IDS, RED_LINES, describeTile } from '../engine/tiles.js';
-import { placementCells, previewAction, metrics, goalLeaders } from '../engine/engine.js';
+import { TILE_BY_ID, TYPE_INFO, ICON_INFO, GOAL_BY_ID, METRIC_KO, MARKET_COSTS, BASIC_IDS, RED_LINES, describeTile, BORDER_BY_ID, BONUS_BY_ID, describeImmediate, describeCond } from '../engine/tiles.js';
+import { placementCells, previewAction, metrics, goalLeaders, borderCandidates, borderAt, costOf } from '../engine/engine.js';
+import { setPlayerCount, borderCardSvg } from './tileface.js';
 import { BOT_LEVELS } from '../engine/bots.js';
 import { HostSession, ClientSession, savedHostGame, clearSavedHostGame, MAX_SEATS } from '../net/session.js';
 import { boroughSvg, miniTileSvg, populationBoardSvg } from './board.js';
@@ -125,6 +126,8 @@ function lobbyHtml(snap) {
           </li>`).join('')}
         ${Array.from({ length: MAX_SEATS - seats.length }, () => '<li class="seat empty">빈 자리</li>').join('')}
       </ul>
+      <label class="exp-toggle" data-act="${isHost ? 'toggle-inc' : 'noop'}"><input type="checkbox" ${snap.lobby?.expansions?.inc ? 'checked' : ''} ${isHost ? '' : 'disabled'}>
+        <span><b>Suburbia Inc. 확장</b><br><small class="muted">보더 12장 · 보너스/챌린지 · 새 건물 26장 · 목표 7종</small></span></label>
       ${isHost ? `
         <div class="bot-add">
           <span>봇 추가:</span>
@@ -157,6 +160,13 @@ function selAction(snap) {
   if (s.src === 'market' && s.mode && s.cell) return { type: s.mode === 'lake' ? 'lake' : 'buy', slot: s.slot, cell: s.cell };
   if (s.src === 'basic' && s.cell && s.discard != null) return { type: 'basic', kind: s.kind, cell: s.cell, discard: s.discard };
   if (s.src === 'invest' && s.cell && s.discard != null) return { type: 'invest', cell: s.cell, discard: s.discard };
+  if (s.src === 'border' && s.cands?.length && s.discard != null) {
+    const c = s.cands[s.ci]; return { type: 'border', idx: s.idx, c0: c.c0, orient: c.orient, lake: !!s.lake, discard: s.discard };
+  }
+  if (s.src === 'redevelop' && s.cell) {
+    if (s.slot != null) return { type: 'redevelop', cell: s.cell, slot: s.slot, lake: s.mode === 'lake' };
+    if (s.kind && s.discard != null) return { type: 'redevelop', cell: s.cell, kind: s.kind, discard: s.discard };
+  }
   return null;
 }
 // action used only to preview effects (discard defaults to a free slot)
@@ -164,11 +174,21 @@ function previewActionFor(snap) {
   const s = ui.sel; const v = snap.view;
   if (!s || !s.cell) return null;
   const free = (() => { for (let i = 6; i >= 0; i--) if (v.market[i]) return i; return 0; })();
+  if (s.src === 'border' && s.cands?.length) { const c = s.cands[s.ci]; return { type: 'border', idx: s.idx, c0: c.c0, orient: c.orient, lake: !!s.lake, discard: s.discard ?? free }; }
+  if (s.src === 'redevelop' && s.kind) return { type: 'redevelop', cell: s.cell, kind: s.kind, discard: s.discard ?? free };
   if (s.src === 'basic') return { type: 'basic', kind: s.kind, cell: s.cell, discard: s.discard ?? free };
   if (s.src === 'invest') return { type: 'invest', cell: s.cell, discard: s.discard ?? free };
   return selAction(snap);
 }
-function needsDiscard() { return ui.sel && (ui.sel.src === 'basic' || ui.sel.src === 'invest') && ui.sel.cell; }
+function needsDiscard() {
+  const s = ui.sel;
+  if (!s) return false;
+  if (s.src === 'basic' || s.src === 'invest') return !!s.cell;
+  if (s.src === 'border') return !!s.cands?.length;
+  if (s.src === 'redevelop') return !!(s.cell && s.kind);
+  return false;
+}
+const plannerCells = (v, me) => Object.entries(v.players[me].tiles).filter(([, r]) => r.id === 'planner' && !r.lake && r.turn !== v.turn).map(([k]) => k);
 
 function gameHtml(snap) {
   const v = snap.view;
@@ -180,6 +200,7 @@ function gameHtml(snap) {
   if (ui.sel && me >= 0) ui.viewIdx = me;
   const round = Math.floor(v.turn / n) + 1;
   const sc = v.stackCounts;
+  setPlayerCount(n);
   return `
   <div class="game">
     <header class="topbar">
@@ -197,6 +218,7 @@ function gameHtml(snap) {
     <div class="layout">
       <section class="col-market">
         ${marketHtml(snap, myTurn)}
+        ${v.exp?.inc ? incPanelHtml(snap, myTurn) : ''}
         ${goalsHtml(snap)}
       </section>
       <section class="col-board">
@@ -231,12 +253,18 @@ function marketHtml(snap, myTurn) {
   const me = v.players[myIndex(snap)];
   const s = ui.sel;
   const discardStep = myTurn && needsDiscard();
-  const extraCost = s?.src === 'basic' ? TILE_BY_ID[s.kind].cost : s?.src === 'invest' && s.cell ? (me.tiles[s.cell]?.lake ? 0 : TILE_BY_ID[me.tiles[s.cell].id].cost) : 0;
+  let extraCost = 0;
+  if (s?.src === 'basic') extraCost = TILE_BY_ID[s.kind].cost;
+  else if (s?.src === 'border') extraCost = s.lake ? 0 : BORDER_BY_ID[v.borderOpen[s.idx]].cost;
+  else if (s?.src === 'invest' && s.cell) {
+    const r = me.tiles[s.cell] || borderAt(me, s.cell);
+    extraCost = !r || r.lake ? 0 : r.border ? BORDER_BY_ID[r.id].cost : costOf(v, r.id);
+  }
   const cards = v.market.map((id, i) => {
     if (!id) return '<div class="card empty">비어 있음</div>';
-    const total = TILE_BY_ID[id].cost + MARKET_COSTS[i];
+    const total = costOf(v, id) + MARKET_COSTS[i];
     const canBuy = me && me.money >= total;
-    const selected = s?.src === 'market' && s.slot === i;
+    const selected = (s?.src === 'market' || s?.src === 'redevelop') && s.slot === i;
     const disc = discardStep ? `<button class="btn small warn" data-act="discard" data-slot="${i}" ${me.money < extraCost + MARKET_COSTS[i] ? 'disabled' : ''}>${s.discard === i ? '✔ 버림' : `버리기 $${MARKET_COSTS[i]}`}</button>` : '';
     return `<div class="card t-${TILE_BY_ID[id].type} ${selected ? 'selected' : ''} ${discardStep && s.discard === i ? 'discarding' : ''}" data-act="${discardStep ? 'discard' : 'pick-market'}" data-slot="${i}" title="${esc(TILE_BY_ID[id].ko + ' — ' + [describeTile(TILE_BY_ID[id]).imm, ...describeTile(TILE_BY_ID[id]).cond].filter(Boolean).join(' / '))}">
       <div class="slot-cost">+$${MARKET_COSTS[i]}</div>
@@ -260,6 +288,32 @@ function marketHtml(snap, myTurn) {
     <div class="cards" data-keep-scroll="market">${cards}</div>
     <h3>기본 타일 <small>사면 시장 타일 1장을 버려야 함</small></h3>
     <div class="basics">${basics}</div>
+  </div>`;
+}
+
+function incPanelHtml(snap, myTurn) {
+  const v = snap.view;
+  const me = myIndex(snap);
+  const s = ui.sel;
+  const cards = v.borderOpen.map((id, i) => {
+    const d = BORDER_BY_ID[id];
+    const desc = [describeImmediate(d) && `즉시 ${describeImmediate(d)}`, ...d.cond.map(describeCond)].filter(Boolean).join(' / ');
+    return `<div class="bcard ${s?.src === 'border' && s.idx === i ? 'selected' : ''}" data-act="pick-border" data-idx="${i}" title="${esc(d.ko + ' — ' + desc)}">${borderCardSvg(id)}<small>${esc(desc)}</small></div>`;
+  }).join('') || '<div class="muted">남은 보더가 없습니다</div>';
+  const bt = (which) => {
+    const id = v[which]; if (!id) return '';
+    const def = BONUS_BY_ID[id]; const spec = def[which];
+    const mine = me >= 0 ? (def.metric === 'pop' ? v.players[me].pop : metrics(v.players[me])[def.metric]) : null;
+    const done = v[`${which}Done`];
+    return `<div class="bonus-tile ${which === 'challenge' ? 'ch' : ''} ${done ? 'done' : ''}">
+      <b>${which === 'bonus' ? '보너스' : '챌린지'}</b> <small class="muted">${which === 'bonus' ? 'A 더미가 바닥나면' : 'B 더미가 바닥나면'}${done ? ' · 완료' : ''}</small><br>
+      ${esc(def.ko)} ${spec.need} 이상 → <b>${which === 'bonus' ? `수입 +${spec.income}` : `평판 +${spec.rep}`}</b>
+      ${mine !== null && !done ? `<br><small class="${mine >= spec.need ? 'ok' : 'muted'}">내 현재: ${mine}</small>` : ''}</div>`;
+  };
+  return `<div class="panel inc-panel">
+    <h3>보더 타일 <small>Suburbia Inc. · 사면 시장 타일 1장을 버림 · 더미 ${v.borderDeckCount ?? 0}장</small></h3>
+    <div class="bcards">${cards}</div>
+    <div class="bonus-row">${bt('bonus')}${bt('challenge')}</div>
   </div>`;
 }
 
@@ -307,12 +361,28 @@ function actionBarHtml(snap, myTurn, me) {
   const p = v.players[me];
   let body = '';
   if (!s) {
-    body = `<b>내 차례!</b> 시장 타일이나 기본 타일을 고르거나,
-      <button class="btn small" data-act="pick-invest" ${p.investLeft ? '' : 'disabled'}>투자하기 (남은 ${p.investLeft})</button>`;
+    const canRedev = plannerCells(v, me).length > 0;
+    body = `<b>내 차례!</b> 시장 타일이나 기본 타일${v.exp?.inc ? '·보더' : ''}를 고르거나,
+      <button class="btn small" data-act="pick-invest" ${p.investLeft ? '' : 'disabled'}>투자하기 (남은 ${p.investLeft})</button>
+      ${canRedev ? '<button class="btn small" data-act="pick-redevelop">🔁 재개발</button>' : ''}`;
+  } else if (s.src === 'border') {
+    const d = BORDER_BY_ID[v.borderOpen[s.idx]];
+    const n = s.cands?.length || 0;
+    body = `<div class="sel-line"><b>보더: ${esc(d.ko)}</b>
+      <button class="btn small ${!s.lake ? 'primary' : ''}" data-act="border-mode" data-lake="0" ${p.money >= d.cost ? '' : 'disabled'}>설치 $${d.cost}</button>
+      <button class="btn small ${s.lake ? 'primary' : ''}" data-act="border-mode" data-lake="1">호수 보더로 (무료)</button>
+      ${n > 1 ? `<button class="btn small" data-act="rotate">↻ 방향 바꾸기 (${s.ci + 1}/${n})</button>` : ''}
+      <button class="btn small ghost" data-act="cancel">취소</button></div>
+      <div class="hint">${!n ? '구역판에서 보더를 놓을 칸(▦)을 고르세요. 노란 선이 있는 쪽(홈 4칸)에 닿은 타일만 인접으로 칩니다.' : s.discard == null ? '시장 타일 1장을 버려야 합니다. 시장에서 「버리기」를 누르세요.' : ''}</div>`;
+  } else if (s.src === 'redevelop') {
+    body = `<div class="sel-line"><b>🔁 재개발</b>
+      ${s.slot != null ? `<button class="btn small ${s.mode !== 'lake' ? 'primary' : ''}" data-act="mode" data-mode="build">건물로</button><button class="btn small ${s.mode === 'lake' ? 'primary' : ''}" data-act="mode" data-mode="lake">호수로</button>` : ''}
+      <button class="btn small ghost" data-act="cancel">취소</button></div>
+      <div class="hint">${!s.cell ? '교체할 재개발 예정지를 구역판에서 고르세요.' : s.slot == null && !s.kind ? '바꿔 넣을 시장 타일이나 기본 타일을 고르세요. 비용과 칸 추가 비용은 무료입니다.' : s.kind && s.discard == null ? '기본 타일로 바꾸면 시장 타일 1장을 버려야 합니다.' : ''}</div>`;
   } else if (s.src === 'market') {
     const id = v.market[s.slot];
     const tl = TILE_BY_ID[id];
-    const total = tl.cost + MARKET_COSTS[s.slot];
+    const total = costOf(v, id) + MARKET_COSTS[s.slot];
     body = `<div class="sel-line"><b>${esc(tl.ko)}</b>
       <button class="btn small ${s.mode === 'build' ? 'primary' : ''}" data-act="mode" data-mode="build" ${p.money >= total ? '' : 'disabled'}>건설 $${total}</button>
       <button class="btn small ${s.mode === 'lake' ? 'primary' : ''}" data-act="mode" data-mode="lake" ${p.money >= MARKET_COSTS[s.slot] ? '' : 'disabled'}>호수로 만들기 $${MARKET_COSTS[s.slot]}</button>
@@ -362,7 +432,16 @@ function boardHtml(snap, me) {
   if (last && last.pi === idx && last.action.cell) opts.lastCell = last.action.cell;
   if (s && idx === me) {
     if (s.src === 'invest') {
-      opts.selectable = new Set(Object.entries(p.tiles).filter(([, r]) => !r.inv).map(([k]) => k));
+      opts.selectable = new Set([
+        ...Object.entries(p.tiles).filter(([, r]) => !r.inv && (r.lake || !TILE_BY_ID[r.id].noInvest)).map(([k]) => k),
+        ...(p.borders || []).filter((b) => !b.inv).flatMap((b) => b.cells),
+      ]);
+      opts.picked = s.cell;
+    } else if (s.src === 'border') {
+      opts.borderCells = new Set(borderCandidates(v, me, !!s.lake).flatMap((c) => c.cells));
+      if (s.cands?.length) opts.borderGhost = { ...s.cands[s.ci], id: v.borderOpen[s.idx], lake: !!s.lake };
+    } else if (s.src === 'redevelop') {
+      opts.selectable = new Set(plannerCells(v, me));
       opts.picked = s.cell;
     } else if (s.src === 'basic' || s.mode) {
       opts.cells = new Set(placementCells(v, me));
@@ -389,7 +468,7 @@ function playersHtml(snap) {
         <div><small>평판</small><b class="${p.rep < 0 ? 'neg' : ''}">${sign(p.rep)}</b></div>
         <div><small>인구</small><b class="pop">${p.pop}</b></div>
       </div>
-      <div class="pc-foot"><span class="tR">주${m.R}</span><span class="tC">상${m.C}</span><span class="tI">산${m.I}</span><span class="tV">공${m.V}</span><span class="tL">호${m.lakes}</span>
+      <div class="pc-foot"><span class="tR">주${m.R}</span><span class="tC">상${m.C}</span><span class="tI">산${m.I}</span><span class="tV">공${m.V}</span><span class="tL">호${m.lakes}</span>${v.exp?.inc ? `<span class="tB" title="보더">보더${m.borders}</span>` : ''}
         <span title="투자 마커">🪙${p.investLeft}</span><span class="muted" title="다음 레드라인">🚩${nextRL}</span></div>
       ${off && snap.role === 'host' && !p.bot ? `<button class="btn small" data-act="cover" data-id="${esc(p.id)}">봇이 대신 플레이</button>` : ''}
     </div>`;
@@ -413,11 +492,17 @@ function modalHtml(snap) {
   else if (m === 'final') body = finalHtml(snap);
   else if (m === 'leave') body = `<h2>게임에서 나갈까요?</h2><p>${snap?.role === 'host' ? '방장이 나가면 다른 사람들의 게임이 멈춥니다. 나중에 「이어하기」로 다시 열 수 있어요.' : '언제든 같은 방 코드로 다시 들어올 수 있어요.'}</p>
     <div class="row"><button class="btn primary" data-act="leave">나가기</button><button class="btn" data-act="close-modal">계속하기</button></div>`;
-  else if (m?.tile) {
+  else if (m?.border) {
+    const d = BORDER_BY_ID[m.border];
+    body = `<div class="info">${borderCardSvg(m.border, 220)}<div><h2>${esc(d.ko)} <small>${esc(d.en)} · 보더</small></h2>
+      <p>비용 $${d.cost} · 노란 선이 있는 쪽 홈 4칸에 닿은 타일만 인접</p>
+      ${describeImmediate(d) ? `<p><b>즉시 효과</b>: ${esc(describeImmediate(d))}</p>` : ''}${d.cond.map((x) => `<p><b>지속 효과</b>: ${esc(describeCond(x))}</p>`).join('')}</div></div>
+      <button class="btn" data-act="close-modal">닫기</button>`;
+  } else if (m?.tile) {
     const tl = TILE_BY_ID[m.tile];
     const d = describeTile(tl);
     body = `<div class="info">${miniTileSvg(m.tile, false, 'info-hex')}<div><h2>${esc(tl.ko)} <small>${esc(tl.en)}</small></h2>
-      <p>${TYPE_INFO[tl.type].ko}${tl.icon ? ` · ${ICON_INFO[tl.icon].ko} ${ICON_INFO[tl.icon].glyph}` : ''} · 비용 $${tl.cost} · ${tl.stack === 'basic' ? '기본 타일' : `${tl.stack} 타일`}</p>
+      <p>${TYPE_INFO[tl.type].ko}${tl.icon ? ` · ${ICON_INFO[tl.icon].ko} ${ICON_INFO[tl.icon].glyph}` : ''} · 비용 $${snap?.view ? costOf(snap.view, m.tile) : tl.cost}${tl.costPerPlayer ? ` (인원 × $${tl.costPerPlayer})` : ''} · ${tl.stack === 'basic' ? '기본 타일' : `${tl.stack} 타일`}${tl.exp ? ' · Suburbia Inc.' : ''}</p>
       ${d.imm ? `<p><b>즉시 효과</b>: ${esc(d.imm)}</p>` : ''}${d.cond.map((x) => `<p><b>지속 효과</b>: ${esc(x)}</p>`).join('')}</div></div>
       <button class="btn" data-act="close-modal">닫기</button>`;
   }
@@ -446,7 +531,7 @@ function finalHtml(snap) {
   <table class="final"><thead><tr><th>순위</th><th>플레이어</th><th>인구</th><th>목표 보너스</th><th>돈→인구</th><th>최종</th></tr></thead><tbody>
   ${order.map((i, rank) => {
     const r = rows[i]; const p = v.players[i];
-    const goals = r.goals.map((g) => `${GOAL_BY_ID[g.id].ko}${g.public ? '' : '(비공개)'} +${g.bonus}`).join('<br>') || '-';
+    const goals = r.goals.map((g) => `${GOAL_BY_ID[g.id].ko}${g.public ? '' : '(비공개)'} +${g.bonus}${g.law ? ' <span class="law-tag">⚖️동점</span>' : ''}`).join('<br>') || '-';
     return `<tr class="${rank === 0 ? 'win' : ''}"><td>${rank + 1}</td><td><span class="dot" style="background:${p.color}"></span>${esc(p.name)}</td><td>${r.basePop}</td><td>${goals}</td><td>+${r.moneyPop} <small class="muted">($${p.money})</small></td><td><b>${r.final}</b></td></tr>`;
   }).join('')}</tbody></table>
   <p class="muted">비공개 목표: ${v.players.map((p) => `${esc(p.name)} — ${p.privateGoal ? esc(GOAL_BY_ID[p.privateGoal].ko) : '-'}`).join(' · ')}</p>
@@ -466,6 +551,7 @@ function rulesHtml() {
   <p><b>배치:</b> 새 타일은 내 타일과 한 변 이상 닿아야 합니다. 위쪽 구역판 자리에는 못 놓아요.</p>
   <p><b>효과 범위:</b> 「인접한」=맞닿은 타일, 「내 구역의」=내 타일 전부, 「모든 구역의」=모든 플레이어 타일, 「다른 구역의」=상대 타일만. 효과는 놓을 때 한 번 계산되고, 이후 조건에 맞는 타일이 지어질 때마다 다시 발동합니다.</p>
   <p><b>레드라인 🚩:</b> 인구가 레드라인을 넘을 때마다 수입과 평판이 1씩 줄어듭니다. 인구가 많을수록 레드라인이 촘촘해져요.</p>
+  <p><b>Suburbia Inc. 확장 (켰을 때):</b> 보더 타일은 기본 타일처럼 사고 시장 타일 1장을 버립니다. 노란 선 쪽 홈 4칸에 닿은 타일에만 효과가 납니다. 뒷면으로 놓으면 무료 <b>호수 보더</b>가 됩니다. 보너스(수입)는 A 더미가, 챌린지(평판)는 B 더미가 바닥날 때 조건을 채운 모든 플레이어가 받습니다. 재개발 예정지는 다음 턴부터 시장·기본 타일로 무료 교체할 수 있습니다. 보더로 구역을 완전히 막을 수는 없습니다.</p>
   <p><b>종료:</b> C 더미에서 「1 More Round」가 나오면 그 라운드를 마치고 한 라운드를 더 한 뒤 끝납니다. 공개·비공개 목표(단독 1위만), 그리고 남은 돈 $5당 인구 1을 더합니다.</p>
   </div><button class="btn" data-act="close-modal">닫기</button>`;
 }
@@ -510,12 +596,34 @@ function handleAct(act, el) {
     case 'close-modal': ui.modal = null; break;
     case 'pick-goal': session.chooseGoal(el.dataset.goal); return;
     case 'view': ui.viewIdx = Number(el.dataset.idx); if (ui.sel) ui.sel = null; break;
+    case 'noop': return;
+    case 'toggle-inc': session.toggleExpansion?.('inc'); return;
+    case 'pick-border': {
+      const idx = Number(el.dataset.idx);
+      if (!myTurn) { ui.modal = { border: v.borderOpen[idx] }; break; }
+      if (ui.sel?.src === 'border' && ui.sel.idx === idx) { ui.modal = { border: v.borderOpen[idx] }; break; }
+      const p = v.players[me];
+      ui.sel = { src: 'border', idx, lake: p.money < BORDER_BY_ID[v.borderOpen[idx]].cost, ci: 0 };
+      break;
+    }
+    case 'border-mode': if (ui.sel?.src === 'border') { ui.sel.lake = el.dataset.lake === '1'; ui.sel.cands = null; ui.sel.cell = null; ui.sel.discard = null; } break;
+    case 'rotate': if (ui.sel?.cands?.length) { ui.sel.ci = (ui.sel.ci + 1) % ui.sel.cands.length; } break;
+    case 'pick-redevelop': {
+      const cells = plannerCells(v, me);
+      ui.sel = { src: 'redevelop', cell: cells.length === 1 ? cells[0] : null, slot: null, kind: null, mode: 'build' };
+      break;
+    }
     case 'pick-market': {
       const slot = Number(el.dataset.slot);
       if (!myTurn) { ui.modal = { tile: v.market[slot] }; break; }
+      if (ui.sel?.src === 'redevelop') {
+        if (!ui.sel.cell) { showToast('먼저 재개발 예정지를 고르세요', true); break; }
+        Object.assign(ui.sel, { slot, kind: null, discard: null, mode: 'build' });
+        break;
+      }
       if (ui.sel?.src === 'market' && ui.sel.slot === slot) { ui.modal = { tile: v.market[slot] }; break; }
       const p = v.players[me];
-      const total = TILE_BY_ID[v.market[slot]].cost + MARKET_COSTS[slot];
+      const total = costOf(v, v.market[slot]) + MARKET_COSTS[slot];
       ui.sel = { src: 'market', slot, mode: p.money >= total ? 'build' : (p.money >= MARKET_COSTS[slot] ? 'lake' : null) };
       break;
     }
@@ -523,6 +631,11 @@ function handleAct(act, el) {
       const kind = el.dataset.kind;
       if (!myTurn) { ui.modal = { tile: kind }; break; }
       if (!v.basics[kind]) { showToast('남은 타일이 없습니다', true); break; }
+      if (ui.sel?.src === 'redevelop') {
+        if (!ui.sel.cell) { showToast('먼저 재개발 예정지를 고르세요', true); break; }
+        Object.assign(ui.sel, { kind, slot: null, discard: null });
+        break;
+      }
       ui.sel = { src: 'basic', kind };
       break;
     }
@@ -550,13 +663,27 @@ function handleCell(cellKey) {
   const me = myIndex(snap);
   const s = ui.sel;
   if (s && ui.viewIdx === me) {
+    if (s.src === 'border') {
+      const cands = borderCandidates(v, me, !!s.lake).filter((c) => c.cells.includes(cellKey));
+      if (!cands.length) { showToast('여기에는 보더를 놓을 수 없습니다', true); render(); return; }
+      Object.assign(s, { cell: cellKey, cands, ci: 0 });
+      render();
+      return;
+    }
+    if (s.src === 'redevelop') {
+      if (!plannerCells(v, me).includes(cellKey)) { showToast('재개발 예정지를 골라야 합니다', true); render(); return; }
+      s.cell = cellKey; render(); return;
+    }
     s.cell = cellKey;
     if (s.src === 'invest') s.discard = null;
     render();
     return;
   }
-  const rec = v.players[ui.viewIdx]?.tiles[cellKey];
-  if (rec && !rec.lake) { ui.modal = { tile: rec.id }; render(); }
+  const pl = v.players[ui.viewIdx];
+  const rec = pl?.tiles[cellKey];
+  if (rec && !rec.lake) { ui.modal = { tile: rec.id }; render(); return; }
+  const bd = pl && borderAt(pl, cellKey);
+  if (bd && !bd.lake) { ui.modal = { border: bd.id }; render(); }
 }
 
 $root.addEventListener('click', (e) => {

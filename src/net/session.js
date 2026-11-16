@@ -1,7 +1,7 @@
 // Host-authoritative sessions over PeerJS (WebRTC data channels).
 import { Peer } from 'peerjs';
 import { createGame, chooseGoal, applyAction, viewFor, playerIndex } from '../engine/engine.js';
-import { chooseBotAction, chooseBotGoal, botName } from '../engine/bots.js';
+import { chooseBotAction, chooseBotGoal, botName, anyLegalAction } from '../engine/bots.js';
 
 const PREFIX = 'suburbia-kr-v1-';
 const SAVE_KEY = 'suburbia.hostSave';
@@ -56,7 +56,7 @@ export class HostSession extends Emitter {
       this.lobby.seats.find((s) => s.id === this.myId).connected = true;
     } else {
       this.code = newRoomCode();
-      this.lobby = { seats: [{ id: this.myId, name, type: 'host', connected: true }] };
+      this.lobby = { seats: [{ id: this.myId, name, type: 'host', connected: true }], expansions: { inc: false } };
       this.state = null;
     }
     if (online) this.openPeer();
@@ -189,9 +189,16 @@ export class HostSession extends Emitter {
     this.notify(`${seat.name} 님 자리를 봇이 대신합니다`);
     this.changed();
   }
+  toggleExpansion(name) {
+    if (this.state) return;
+    this.lobby.expansions ??= {};
+    this.lobby.expansions[name] = !this.lobby.expansions[name];
+    this.changed();
+  }
   start() {
     if (this.state || this.lobby.seats.length < 2) return;
     this.state = createGame({
+      expansions: this.lobby.expansions || {},
       players: this.lobby.seats.map((s) => ({ id: s.id, name: s.name, bot: s.type === 'bot' ? s.level : null })),
       seed: crypto.getRandomValues(new Uint32Array(1))[0],
     });
@@ -212,9 +219,8 @@ export class HostSession extends Emitter {
     this.botThinking = p.id;
     this.botTimer = setTimeout(() => {
       if (this.state !== s || s.players[s.current] !== p || !p.bot) return;
-      const a = chooseBotAction(s, s.current, p.bot);
-      const r = applyAction(s, p.id, a);
-      if (!r.ok) console.warn('bot action failed', r.error, a);
+      let r = applyAction(s, p.id, chooseBotAction(s, s.current, p.bot));
+      if (!r.ok) { console.warn('bot action failed', r.error); r = applyAction(s, p.id, anyLegalAction(s, s.current)); }
       this.botThinking = null;
       this.changed();
     }, this.botDelay ?? 900);
