@@ -1,0 +1,1 @@
+{"type":"module","name":"suburbia","version":"1.0.0","private":true,"dependencies":{"esbuild":"^0.24.2","peer":"^1.0.2","peerjs":"^1.5.5"}}

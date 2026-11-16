@@ -1,0 +1,37 @@
+{
+  "name": "suburbia",
+  "productName": "Suburbia",
+  "version": "1.0.1",
+  "description": "서버비아 - 온라인 멀티플레이 보드게임",
+  "main": "main.js",
+  "author": "Suburbia fan project",
+  "build": {
+    "appId": "kr.suburbia.game",
+    "productName": "Suburbia",
+    "files": [
+      "main.js",
+      "app/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "signAndEditExecutable": false
+    },
+    "portable": {
+      "artifactName": "Suburbia-${version}-portable.exe"
+    },
+    "directories": {
+      "output": "release"
+    }
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
+  }
+}
