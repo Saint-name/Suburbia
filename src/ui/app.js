@@ -238,9 +238,11 @@ function marketHtml(snap, myTurn) {
     const canBuy = me && me.money >= total;
     const selected = s?.src === 'market' && s.slot === i;
     const disc = discardStep ? `<button class="btn small warn" data-act="discard" data-slot="${i}" ${me.money < extraCost + MARKET_COSTS[i] ? 'disabled' : ''}>${s.discard === i ? '✔ 버림' : `버리기 $${MARKET_COSTS[i]}`}</button>` : '';
-    return `<div class="card t-${TILE_BY_ID[id].type} ${selected ? 'selected' : ''} ${discardStep && s.discard === i ? 'discarding' : ''}" data-act="${discardStep ? 'discard' : 'pick-market'}" data-slot="${i}">
+    return `<div class="card t-${TILE_BY_ID[id].type} ${selected ? 'selected' : ''} ${discardStep && s.discard === i ? 'discarding' : ''}" data-act="${discardStep ? 'discard' : 'pick-market'}" data-slot="${i}" title="${esc(TILE_BY_ID[id].ko + ' — ' + [describeTile(TILE_BY_ID[id]).imm, ...describeTile(TILE_BY_ID[id]).cond].filter(Boolean).join(' / '))}">
       <div class="slot-cost">+$${MARKET_COSTS[i]}</div>
-      ${cardHtml(id)}
+      ${miniTileSvg(id, false, 'card-hex')}
+      <div class="card-en">${esc(TILE_BY_ID[id].en)}</div>
+      <div class="card-desc">${[describeTile(TILE_BY_ID[id]).imm && `즉시 ${describeTile(TILE_BY_ID[id]).imm}`, ...describeTile(TILE_BY_ID[id]).cond].filter(Boolean).map(esc).join('<br>')}</div>
       <div class="card-price ${canBuy ? '' : 'no'}">총 $${total}</div>
       ${disc}
     </div>`;
@@ -250,7 +252,7 @@ function marketHtml(snap, myTurn) {
     const left = v.basics[k];
     const selected = s?.src === 'basic' && s.kind === k;
     return `<div class="basic ${selected ? 'selected' : ''} ${left ? '' : 'out'}" data-act="pick-basic" data-kind="${k}">
-      ${miniTileSvg(k)}<div><b>${tl.ko}</b> $${tl.cost}<br><small>${esc(describeTile(tl).imm)}${tl.cond.length ? ` · ${esc(describeTile(tl).cond[0])}` : ''}</small><br><small class="muted">남은 수 ${left}</small></div>
+      ${miniTileSvg(k, false, 'basic-hex')}<div><b>${tl.ko}</b> $${tl.cost}<br><small>${esc(describeTile(tl).imm)}${tl.cond.length ? ` · ${esc(describeTile(tl).cond[0])}` : ''}</small><br><small class="muted">남은 수 ${left}</small></div>
     </div>`;
   }).join('');
   return `<div class="panel market">
@@ -414,7 +416,7 @@ function modalHtml(snap) {
   else if (m?.tile) {
     const tl = TILE_BY_ID[m.tile];
     const d = describeTile(tl);
-    body = `<div class="info">${miniTileSvg(m.tile)}<div><h2>${esc(tl.ko)} <small>${esc(tl.en)}</small></h2>
+    body = `<div class="info">${miniTileSvg(m.tile, false, 'info-hex')}<div><h2>${esc(tl.ko)} <small>${esc(tl.en)}</small></h2>
       <p>${TYPE_INFO[tl.type].ko}${tl.icon ? ` · ${ICON_INFO[tl.icon].ko} ${ICON_INFO[tl.icon].glyph}` : ''} · 비용 $${tl.cost} · ${tl.stack === 'basic' ? '기본 타일' : `${tl.stack} 타일`}</p>
       ${d.imm ? `<p><b>즉시 효과</b>: ${esc(d.imm)}</p>` : ''}${d.cond.map((x) => `<p><b>지속 효과</b>: ${esc(x)}</p>`).join('')}</div></div>
       <button class="btn" data-act="close-modal">닫기</button>`;

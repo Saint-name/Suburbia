@@ -1,8 +1,9 @@
 // SVG rendering of a borough (flat-top hexes, axial coordinates)
 import { TILE_BY_ID, TYPE_INFO, ICON_INFO } from '../engine/tiles.js';
 import { parseKey } from '../engine/engine.js';
+import { tileFace, tileSvg } from './tileface.js';
 
-const R = 44;
+const R = 52;
 const H = Math.sqrt(3) * R;
 export const center = (k) => { const [q, r] = parseKey(k); return [1.5 * R * q, H * (r + q / 2)]; };
 function corners(cx, cy, rr = R) {
@@ -59,13 +60,13 @@ export function boroughSvg(player, opts = {}) {
   for (const k of keys) {
     const [x, y] = center(k);
     const sel = opts.selectable?.has(k);
-    out.push(`<g class="tile ${sel ? 'selectable' : ''} ${opts.picked === k ? 'picked' : ''}" data-cell="${k}">${tileHexSvg(player.tiles[k], x, y, { last: opts.lastCell === k })}</g>`);
+    out.push(`<g class="tile ${sel ? 'selectable' : ''} ${opts.picked === k ? 'picked' : ''}" data-cell="${k}">${tileFace(player.tiles[k], x, y, R - 1, { last: opts.lastCell === k })}${sel || opts.picked === k ? `<polygon points="${corners(x, y, R - 2)}" class="hex-sel"/>` : ''}</g>`);
   }
   for (const k of cells) {
     const [x, y] = center(k);
     const picked = opts.picked === k;
     out.push(`<g class="slot ${picked ? 'picked' : ''}" data-cell="${k}">`);
-    if (picked && opts.ghost) out.push(`<g opacity="0.8">${tileHexSvg(opts.ghost, x, y)}</g><polygon points="${corners(x, y, R - 2)}" class="hex-pick"/>`);
+    if (picked && opts.ghost) out.push(`<g opacity="0.85">${tileFace(opts.ghost, x, y, R - 1)}</g><polygon points="${corners(x, y, R - 2)}" class="hex-pick"/>`);
     else out.push(`<polygon points="${corners(x, y, R - 3)}" class="hex-slot"/><text x="${x}" y="${y + 5}" class="slot-plus">+</text>`);
     out.push('</g>');
   }
@@ -165,6 +166,6 @@ export function populationBoardSvg(players, redLines) {
   return out.join('');
 }
 
-export function miniTileSvg(id, lake = false) {
-  return `<svg viewBox="-46 -40 92 80" class="mini-hex">${tileHexSvg({ id, lake }, 0, 0)}</svg>`;
+export function miniTileSvg(id, lake = false, cls = 'mini-hex') {
+  return tileSvg({ id, lake }, 100, cls);
 }
