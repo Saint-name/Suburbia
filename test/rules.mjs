@@ -100,4 +100,20 @@ test('Game ends with equal turns for all players', () => {
   }
 });
 
+test('Bots ignore hidden info (stack order, opponents\' secret goals)', async () => {});
+{
+  const { chooseBotAction, seedBotRng } = await import('../src/engine/bots.js');
+  for (const level of ['easy', 'normal', 'hard']) {
+    for (let seed = 1; seed <= 4; seed++) {
+      const a = createGame({ players: [0, 1, 2].map((i) => ({ id: `p${i}`, name: `P${i}` })), seed });
+      a.players.forEach((p) => chooseGoal(a, p.id, p.goalOptions[0]));
+      const b = JSON.parse(JSON.stringify(a));
+      b.stacks.A.reverse(); b.stacks.B.reverse(); b.stacks.C.reverse();
+      b.players.forEach((p, i) => { if (i !== 0) p.privateGoal = p.goalOptions[1]; });
+      seedBotRng(99); const x = chooseBotAction(a, 0, level); seedBotRng(99); const y = chooseBotAction(b, 0, level);
+      assert.deepEqual(x, y, `${level} seed ${seed}`);
+    }
+  }
+  console.log('✓ bots decide identically when hidden info differs');
+}
 console.log(`\n${passed} rule tests passed`);

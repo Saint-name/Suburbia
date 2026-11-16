@@ -11,6 +11,7 @@ export const botName = (i, level) => `${BOT_NAMES[i % BOT_NAMES.length]} (${BOT_
 
 // tiny local rng so bots don't consume the game rng
 let seedR = 12345;
+export const seedBotRng = (n) => { seedR = n; };
 const rnd = () => { seedR = (seedR * 1103515245 + 12345) & 0x7fffffff; return seedR / 0x7fffffff; };
 
 export function chooseBotGoal(s, pi, level) {
@@ -263,7 +264,18 @@ function followUpValue(entry, pi, level, T, progress, pool) {
   return best;
 }
 
-export function chooseBotAction(s, pi, level = 'normal') {
+// What a human in seat pi could know: other players' secret goals and the order of
+// the tile stacks are removed (only stack sizes stay, as on the table).
+export function botView(s, pi) {
+  const v = clone(s);
+  v.players.forEach((p, i) => { if (i !== pi) { p.privateGoal = null; p.goalOptions = []; } });
+  v.stacks = { A: Array(s.stacks.A.length).fill(null), B: Array(s.stacks.B.length).fill(null), C: Array(s.stacks.C.length).fill(null) };
+  v.rng = 0; v.seed = 0;
+  return v;
+}
+
+export function chooseBotAction(state, pi, level = 'normal') {
+  const s = botView(state, pi);
   const T = estimateTurnsLeft(s);
   const total = { 2: 22, 3: 20, 4: 19 }[s.players.length] || 20;
   const progress = Math.max(0, Math.min(1, 1 - T / total));
