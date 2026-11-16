@@ -3,6 +3,8 @@
 친구들과 온라인으로, 또는 봇(쉬움·보통·어려움)과 함께 하는 서버비아 팬 구현입니다.
 
 - **웹에서 바로 플레이:** https://saint-name.github.io/Suburbia/ (PC·모바일 브라우저)
+- **이전 버전 플레이:** https://saint-name.github.io/Suburbia/versions/
+- **변경 기록:** [CHANGELOG.md](CHANGELOG.md)
 - **Windows:** `Suburbia-x.y.z-portable.exe` (설치 없이 실행)
 
 ## 하는 법
@@ -20,10 +22,11 @@
 | 1.0.3 | 봇이 숨겨진 정보를 보지 않도록 수정 |
 | 1.0.4 | Suburbia Inc. 확장 |
 | 1.0.5 | 모든 확장(5★·Nightlife·Cons·Essen), 선택 테두리 자홍색 |
+| 1.0.6 | 5★를 끈 게임에서 별 표시에 "5★ 없이는 효과 없음" 안내 |
 
 ## 개발
 - `src/engine` 규칙 엔진·봇, `src/ui` 화면, `src/net` 온라인(PeerJS/WebRTC)
-- `npm install && node build.mjs` → `dist/index.html` (웹 사이트는 `docs/index.html`)
+- `npm install && node build.mjs` → `dist/index.html` (웹 사이트는 `docs/index.html`, 버전별 사본은 `docs/versions/<버전>/`)
 - 테스트: `node test/rules.mjs`, `node test/inc.mjs`, `node test/exp.mjs`
 
 Suburbia는 Bézier Games의 보드게임입니다. 이 저장소는 개인적으로 즐기기 위한 비공식 팬 구현입니다.
