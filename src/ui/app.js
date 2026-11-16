@@ -1,6 +1,14 @@
 import { TILE_BY_ID, TYPE_INFO, ICON_INFO, GOAL_BY_ID, METRIC_KO, BASIC_IDS, RED_LINES, describeTile, BORDER_BY_ID, BONUS_BY_ID, describeImmediate, describeCond, EXPANSIONS, STAR_MAX, STAR_CAP, STAR_INCOME_AT, STAR_REP_AT } from '../engine/tiles.js';
 import { placementCells, previewAction, metrics, goalLeaders, borderCandidates, borderAt, costOf, mc } from '../engine/engine.js';
-import { setPlayerCount, borderCardSvg } from './tileface.js';
+import { setPlayerCount, borderCardSvg, setStarsActive } from './tileface.js';
+
+// Tile description; stars are marked as inactive when the 5★ Star Track is not in play.
+let starsOn = true;
+function descTile(tl) {
+  const d = describeTile(tl);
+  if (tl.stars && !starsOn) d.imm = d.imm.replace(`★${tl.stars}`, `★${tl.stars}(5★ 없이는 효과 없음)`);
+  return d;
+}
 import { BOT_LEVELS } from '../engine/bots.js';
 import { HostSession, ClientSession, savedHostGame, clearSavedHostGame, MAX_SEATS } from '../net/session.js';
 import { boroughSvg, miniTileSvg, populationBoardSvg } from './board.js';
@@ -204,6 +212,7 @@ function gameHtml(snap) {
   const round = Math.floor(v.turn / n) + 1;
   const sc = v.stackCounts;
   setPlayerCount(n);
+  starsOn = !!v.exp?.five; setStarsActive(starsOn);
   return `
   <div class="game">
     <header class="topbar">
@@ -242,7 +251,7 @@ function gameHtml(snap) {
 
 function cardHtml(id, opts = {}) {
   const tl = TILE_BY_ID[id];
-  const d = describeTile(tl);
+  const d = descTile(tl);
   return `
     <div class="card-top"><span class="ctype">${TYPE_INFO[tl.type].ko}${tl.icon ? ` ${ICON_INFO[tl.icon].glyph}` : ''}</span><span class="ccost">$${tl.cost}</span></div>
     <div class="card-name">${esc(tl.ko)}</div>
@@ -270,11 +279,11 @@ function marketHtml(snap, myTurn) {
     const canBuy = me && me.money >= total;
     const selected = (s?.src === 'market' || s?.src === 'redevelop') && s.slot === i;
     const disc = discardStep ? `<button class="btn small warn" data-act="discard" data-slot="${i}" ${me.money < extraCost + mc(v)[i] ? 'disabled' : ''}>${s.discard === i ? '✔ 버림' : `버리기 $${mc(v)[i]}`}</button>` : '';
-    return `<div class="card t-${TILE_BY_ID[id].type} ${selected ? 'selected' : ''} ${discardStep && s.discard === i ? 'discarding' : ''}" data-act="${discardStep ? 'discard' : 'pick-market'}" data-slot="${i}" title="${esc(TILE_BY_ID[id].ko + ' — ' + [describeTile(TILE_BY_ID[id]).imm, ...describeTile(TILE_BY_ID[id]).cond].filter(Boolean).join(' / '))}">
+    return `<div class="card t-${TILE_BY_ID[id].type} ${selected ? 'selected' : ''} ${discardStep && s.discard === i ? 'discarding' : ''}" data-act="${discardStep ? 'discard' : 'pick-market'}" data-slot="${i}" title="${esc(TILE_BY_ID[id].ko + ' — ' + [descTile(TILE_BY_ID[id]).imm, ...descTile(TILE_BY_ID[id]).cond].filter(Boolean).join(' / '))}">
       <div class="slot-cost">+$${mc(v)[i]}</div>
       ${miniTileSvg(id, false, 'card-hex')}
       <div class="card-en">${esc(TILE_BY_ID[id].en)}</div>
-      <div class="card-desc">${[describeTile(TILE_BY_ID[id]).imm && `즉시 ${describeTile(TILE_BY_ID[id]).imm}`, ...describeTile(TILE_BY_ID[id]).cond].filter(Boolean).map(esc).join('<br>')}</div>
+      <div class="card-desc">${[descTile(TILE_BY_ID[id]).imm && `즉시 ${descTile(TILE_BY_ID[id]).imm}`, ...descTile(TILE_BY_ID[id]).cond].filter(Boolean).map(esc).join('<br>')}</div>
       <div class="card-price ${canBuy ? '' : 'no'}">총 $${total}</div>
       ${disc}
     </div>`;
@@ -284,7 +293,7 @@ function marketHtml(snap, myTurn) {
     const left = v.basics[k];
     const selected = s?.src === 'basic' && s.kind === k;
     return `<div class="basic ${selected ? 'selected' : ''} ${left ? '' : 'out'}" data-act="pick-basic" data-kind="${k}">
-      ${miniTileSvg(k, false, 'basic-hex')}<div><b>${tl.ko}</b> $${tl.cost}<br><small>${esc(describeTile(tl).imm)}${tl.cond.length ? ` · ${esc(describeTile(tl).cond[0])}` : ''}</small><br><small class="muted">남은 수 ${left}</small></div>
+      ${miniTileSvg(k, false, 'basic-hex')}<div><b>${tl.ko}</b> $${tl.cost}<br><small>${esc(descTile(tl).imm)}${tl.cond.length ? ` · ${esc(descTile(tl).cond[0])}` : ''}</small><br><small class="muted">남은 수 ${left}</small></div>
     </div>`;
   }).join('');
   return `<div class="panel market">
@@ -536,7 +545,7 @@ function modalHtml(snap) {
       <button class="btn" data-act="close-modal">닫기</button>`;
   } else if (m?.tile) {
     const tl = TILE_BY_ID[m.tile];
-    const d = describeTile(tl);
+    const d = descTile(tl);
     body = `<div class="info">${miniTileSvg(m.tile, false, 'info-hex')}<div><h2>${esc(tl.ko)} <small>${esc(tl.en)}</small></h2>
       <p>${TYPE_INFO[tl.type].ko}${tl.icon ? ` · ${ICON_INFO[tl.icon].ko} ${ICON_INFO[tl.icon].glyph}` : ''} · 비용 $${snap?.view ? costOf(snap.view, m.tile) : tl.cost}${tl.costPerPlayer ? ` (인원 × $${tl.costPerPlayer})` : ''} · ${tl.stack === 'basic' ? '기본 타일' : `${tl.stack} 타일`}${tl.exp ? ' · Suburbia Inc.' : ''}</p>
       ${d.imm ? `<p><b>즉시 효과</b>: ${esc(d.imm)}</p>` : ''}${d.cond.map((x) => `<p><b>지속 효과</b>: ${esc(x)}</p>`).join('')}</div></div>

@@ -7,6 +7,8 @@ const TYPE_DARK = { R: '#2f6b25', C: '#1f4f7f', I: '#8a6d12', V: '#4d5357', X: '
 const TYPE_EMBLEM = { R: '🏘️', C: '🏬', I: '🏭', V: '🏛️', X: '🚧' };
 let PLAYERS_N = 4;
 export const setPlayerCount = (n) => { PLAYERS_N = n || 4; };
+let STARS_ON = true; // stars only do something when the 5★ Star Track is in play
+export const setStarsActive = (on) => { STARS_ON = !!on; };
 const costLabel = (tl) => (tl.costPerPlayer ? `$${tl.costPerPlayer * PLAYERS_N}` : `$${tl.cost}`);
 const SPECIAL_ROW = {
   lawOffice: '⚖️ 동점 목표 1개 획득', planner: '🔁 다음 턴부터 무료 교체', redistrict: '상대마다 인구 5 뺏기',
@@ -162,7 +164,7 @@ export function tileFace(rec, cx, cy, R, opts = {}) {
     }
     if (tl.stars) {
       const sx = tl.req ? cx - 0.6 * R : cx - 0.36 * R; const sy = tl.req ? cy + 0.17 * R : cy - 0.36 * R;
-      out.push(`<polygon points="${starPath(sx, sy, 9.5 * s)}" fill="#ffcf33" stroke="#7a5a00" stroke-width="${1 * s}"/><text x="${sx}" y="${sy + 3.6 * s}" font-size="${8.5 * s}" fill="#3b2a00" class="tf-t b">${tl.stars}</text>`);
+      out.push(`<g opacity="${STARS_ON ? 1 : 0.35}"><polygon points="${starPath(sx, sy, 9.5 * s)}" fill="#ffcf33" stroke="#7a5a00" stroke-width="${1 * s}"/><text x="${sx}" y="${sy + 3.6 * s}" font-size="${8.5 * s}" fill="#3b2a00" class="tf-t b">${tl.stars}</text>${STARS_ON ? '' : `<title>5★ 없이는 효과 없음</title>`}</g>`);
     }
     if (tl.req) out.push(`<text x="${cx}" y="${by + bh + 9 * s}" font-size="${7.5 * s}" fill="#ffe27a" class="tf-t b cost">${REQ_ROW[tl.req]}</text>`);
     const specialRow = tl.special && SPECIAL_ROW[tl.special];
