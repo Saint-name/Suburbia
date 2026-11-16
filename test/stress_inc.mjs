@@ -1,10 +1,12 @@
 import { createGame, chooseGoal, applyAction, placementCells } from '../src/engine/engine.js';
 import { chooseBotAction, chooseBotGoal } from '../src/engine/bots.js';
-const N = Number(process.argv[2] || 60); let passes = 0; let minCells = 99; let borders = 0;
+const N = Number(process.argv[2] || 60);
+const ALL = process.argv[3] === 'all';
+const EXP = ALL ? { inc: true, five: true, night: true, promo: true } : { inc: true }; let passes = 0; let minCells = 99; let borders = 0;
 for (let g = 0; g < N; g++) {
-  const n = 2 + (g % 3);
+  const n = ALL ? 2 + (g % 4) : 2 + (g % 3);
   const levels = Array.from({ length: n }, (_, i) => (g % 5 === 0 && i === 0 ? 'hard' : 'normal'));
-  const s = createGame({ players: levels.map((lv, i) => ({ id: `p${i}`, name: lv + i, bot: lv })), seed: 7000 + g, expansions: { inc: true } });
+  const s = createGame({ players: levels.map((lv, i) => ({ id: `p${i}`, name: lv + i, bot: lv })), seed: 7000 + g, expansions: EXP });
   s.players.forEach((p, i) => chooseGoal(s, p.id, chooseBotGoal(s, i, p.bot)));
   let guard = 0;
   while (s.phase === 'play') {

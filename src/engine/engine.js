@@ -1,10 +1,12 @@
 // Suburbia rules engine. Pure JS, JSON-serialisable state, no DOM.
 import {
   TILE_BY_ID, BASIC_IDS, GOALS, GOAL_BY_ID, RED_LINES, MARKET_COSTS, TILES,
-  BORDERS, BORDER_BY_ID, BONUSES, BONUS_BY_ID, tileCostN,
+  BORDERS, BORDER_BY_ID, BONUSES, BONUS_BY_ID, tileCostN, STAR_MAX, STAR_CAP, STAR_INCOME_AT, STAR_REP_AT,
 } from './tiles.js';
 
-export const PLAYER_COLORS = ['#e2504c', '#f2c230', '#9b5fc0', '#3fb0a8'];
+export const PLAYER_COLORS = ['#e2504c', '#f2c230', '#9b5fc0', '#3fb0a8', '#ff8c42'];
+// Market costs: 7 spaces, or 8 with five players (the 5★ marketplace side)
+export const mc = (s) => s.marketCosts || MARKET_COSTS;
 export const NEIGHBORS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, -1], [-1, 1]];
 const MORE_ROUND = '1MR';
 
@@ -39,16 +41,21 @@ export function cellAllowed(k) {
 // ───────────────────────── setup ─────────────────────────
 export function createGame({ players, seed = (Date.now() >>> 0), expansions = {} }) {
   const n = players.length;
-  if (n < 2 || n > 4) throw new Error('플레이어는 2~4명이어야 합니다');
+  const maxP = expansions.five ? 5 : 4;
+  if (n < 2 || n > maxP) throw new Error(`플레이어는 2~${maxP}명이어야 합니다`);
   const s = {
     version: 1, seed, rng: seed >>> 0, phase: 'goals', players: [], market: [],
     basics: { suburbs: 4, park: 4, factory: 4 }, stacks: { A: [], B: [], C: [] },
     publicGoals: [], placeCounter: 0, turn: 0, current: 0, endAfterTurn: null,
     log: [], lastAction: null, final: null, moreRoundRevealed: false,
-    exp: { inc: !!expansions.inc }, borderDeck: [], borderOpen: [], bonus: null, challenge: null,
+    exp: { inc: !!expansions.inc, five: !!expansions.five, night: !!expansions.night, promo: !!expansions.promo },
+    borderDeck: [], borderOpen: [], bonus: null, challenge: null,
     bonusDone: false, challengeDone: false,
+    marketCosts: n === 5 ? [10, 8, 6, 4, 2, 0, 0, 0] : MARKET_COSTS.slice(),
+    order: Array.from({ length: n }, (_, i) => i), starClock: n,
   };
-  const per = { 2: 15, 3: 18, 4: 21 }[n];
+  if (n === 5) s.basics = { suburbs: 5, park: 5, factory: 5 };
+  const per = { 2: 15, 3: 18, 4: 21, 5: 24 }[n];
   const pools = { A: [], B: [], C: [] };
   for (const tl of TILES) {
     if (tl.stack === 'basic' || (tl.exp && !s.exp[tl.exp])) continue;
@@ -59,18 +66,21 @@ export function createGame({ players, seed = (Date.now() >>> 0), expansions = {}
   s.stacks.B = pools.B.slice(0, per);
   const cMain = pools.C.slice(0, per);
   const cExtra = pools.C.slice(per, per + 4);
-  const mixN = { 2: 6, 3: 9, 4: 12 }[n];
+  const mixN = { 2: 6, 3: 9, 4: 12, 5: 15 }[n];
   const top = cMain.slice(0, per - mixN);
   const mixed = shuffle(s, [...cMain.slice(per - mixN), MORE_ROUND]);
   s.stacks.C = [...top, ...mixed, ...cExtra]; // index 0 = top of stack
 
-  for (let i = 0; i < 7; i++) s.market.push(s.stacks.A.shift());
+  for (let i = 0; i < s.marketCosts.length; i++) s.market.push(s.stacks.A.shift());
   const goals = shuffle(s, GOALS.filter((g) => !g.exp || s.exp[g.exp]).map((g) => g.id));
   if (s.exp.inc) {
-    s.borderDeck = shuffle(s, BORDERS.map((b) => b.id));
+    const incB = shuffle(s, BORDERS.filter((b) => !b.exp).map((b) => b.id));
+    const deck = s.exp.five ? [...incB.slice(0, 6), ...BORDERS.filter((b) => b.exp === 'five').map((b) => b.id)] : incB;
+    s.borderDeck = shuffle(s, deck);
     s.borderOpen = s.borderDeck.splice(0, 3);
-    s.bonus = BONUSES[Math.floor(rand(s) * BONUSES.length)].id;
-    s.challenge = BONUSES[Math.floor(rand(s) * BONUSES.length)].id;
+    const pool = BONUSES.filter((b) => !b.exp || s.exp[b.exp]);
+    s.bonus = pool[Math.floor(rand(s) * pool.length)].id;
+    s.challenge = pool[Math.floor(rand(s) * pool.length)].id;
   }
   s.publicGoals = goals.splice(0, n);
 
@@ -84,8 +94,9 @@ export function createGame({ players, seed = (Date.now() >>> 0), expansions = {}
     tiles[key(0, 1)] = { id: 'park', inv: false, order: 0 };
     tiles[key(0, 2)] = { id: 'factory', inv: false, order: 0 };
     s.players.push({
-      id: p.id, name: p.name, bot: p.bot || null, color: PLAYER_COLORS[p._i % 4],
+      id: p.id, name: p.name, bot: p.bot || null, color: PLAYER_COLORS[p._i % 5],
       money: 15, income: 0, rep: 1, pop: 2, investLeft: 3, tiles, borders: [],
+      starPos: 0, starStamp: n - i, nightImmune: false, nightDebt: {},
       goalOptions: goals.splice(0, 2), privateGoal: null,
     });
   });
@@ -130,7 +141,7 @@ export function placementCells(s, pi) {
 export function tileCostAt(s, slot) {
   const id = s.market[slot];
   if (!id) return null;
-  return costOf(s, id) + MARKET_COSTS[slot];
+  return costOf(s, id) + mc(s)[slot];
 }
 
 // ── Border geometry: a strip of 4 cells in a zigzag; its notched edge faces 4 "slot" cells ──
@@ -192,8 +203,13 @@ export function borderCandidates(s, pi, lake = false) {
 
 function matches(rec, cn) {
   if (cn.border) return !!rec && rec.border && !rec.lake;
+  if (rec?.border) return !!cn.star && !rec.lake && !!BORDER_BY_ID[rec.id].star;
   if (!isBuilding(rec)) return false;
   const tl = tileOf(rec);
+  if (cn.star) return !!tl.star;
+  if (cn.night) return !!tl.night;
+  if (cn.con) return !!tl.con;
+  if (cn.essen) return !!tl.essen;
   if (cn.icon) return tl.icon === cn.icon;
   if (cn.types) return cn.types.includes(tl.type);
   return false;
@@ -229,12 +245,18 @@ function countMatches(s, oi, k, rec, cn) {
     s.players.forEach((p) => { for (const b of p.borders || []) if (!b.lake) c++; });
     return c;
   }
-  if (cn.scope === 'adj') return neighborsOf(k).filter((nk) => matches(own[nk], cn)).length;
+  if (cn.lakes) return lakeCountAdj(s.players[oi], k);
+  if (cn.scope === 'adj') {
+    let c = neighborsOf(k).filter((nk) => matches(own[nk], cn)).length;
+    if (cn.star) c += (s.players[oi].borders || []).filter((b) => b.slots.includes(k) && matches(b, cn)).length;
+    return c;
+  }
   let c = 0;
   s.players.forEach((p, i) => {
     if (cn.scope === 'own' && i !== oi) return;
     if (cn.scope === 'others' && i === oi) return;
     for (const r of Object.values(p.tiles)) if (matches(r, cn) && !(cn.excludeSelf && r === rec)) c++;
+    if (cn.star) for (const b of p.borders || []) if (matches(b, cn)) c++;
   });
   return c;
 }
@@ -243,6 +265,13 @@ function countMatches(s, oi, k, rec, cn) {
 function apply(s, ctx, pi, res, amt, src) {
   if (!amt) return;
   const p = s.players[pi];
+  if (res === 'star') { moveStar(s, ctx, pi, amt); return; }
+  if (amt < 0 && TILE_BY_ID[src]?.night) {
+    // negative Nightlife effects: ignored after a Police Station / Night Court, otherwise remembered
+    if (p.nightImmune) return;
+    p.nightDebt ??= {};
+    p.nightDebt[res] = (p.nightDebt[res] || 0) - amt;
+  }
   if (res === 'income' || res === 'rep') {
     const before = p[res];
     p[res] = clamp(before + amt);
@@ -263,6 +292,38 @@ function apply(s, ctx, pi, res, amt, src) {
     if (src === 'radioactive' && pi === ctx.actor && p.pop + amt < 0) ctx.illegal ??= '방사성 폐기물장에 낼 인구가 부족합니다';
     changePop(s, ctx, pi, amt, src);
   }
+}
+
+// ── Star Track (5★) ──
+export function moveStar(s, ctx, pi, k) {
+  if (!s.exp?.five || k <= 0) return;
+  const p = s.players[pi];
+  const old = p.starPos;
+  const occ = (t) => s.players.filter((q, i) => i !== pi && q.starPos === t).length;
+  let to = old;
+  for (let t = Math.min(STAR_MAX, old + k); t > old; t--) if (occ(t) < (STAR_CAP[t] ?? 99)) { to = t; break; }
+  if (to === old) return;
+  p.starPos = to; p.starStamp = ++s.starClock; // the moving token goes on top
+  ctx.deltas.push({ pi, res: 'star', amt: to - old, src: 'star' });
+  if (old < STAR_INCOME_AT && to >= STAR_INCOME_AT) apply(s, ctx, pi, 'income', 1, 'startrack');
+  if (old < STAR_REP_AT && to >= STAR_REP_AT) apply(s, ctx, pi, 'rep', 1, 'startrack');
+}
+const starRank = (p) => p.starPos * 1000 + p.starStamp;
+
+function starRoundEnd(s) {
+  const ctx = { deltas: [] };
+  const pos = s.players.map((p) => p.starPos);
+  const hi = Math.max(...pos); const lo = Math.min(...pos);
+  if (hi !== lo) {
+    const top = []; const bottom = [];
+    s.players.forEach((p, i) => {
+      if (p.starPos === hi) { changePop(s, ctx, i, 1, 'startrack'); top.push(p.name); }
+      if (p.starPos === lo) { changePop(s, ctx, i, -1, 'startrack', true); bottom.push(p.name); }
+    });
+    addLog(s, null, `★ 라운드 정산: 별 최다 ${top.join(', ')} 인구 +1 / 최소 ${bottom.join(', ')} 인구 -1`);
+  }
+  s.order = s.players.map((p, i) => i).sort((a, b) => starRank(s.players[b]) - starRank(s.players[a]));
+  addLog(s, null, `다음 라운드 턴 순서: ${s.order.map((i) => s.players[i].name).join(' → ')}`);
 }
 
 export function redLinesBetween(lo, hi) { // count lines N with lo < N <= hi
@@ -330,7 +391,7 @@ function applyReactions(s, ctx, pi, kt, rec) {
         if (oi === pi) { const k = lakeCountAdj(s.players[pi], kt); if (k) apply(s, ctx, oi, cn.res, cn.amt * k * m, u.id); }
         continue;
       }
-      if (cn.border) continue;
+      if (cn.border || cn.lakes) continue;
       if (!matches(rec, cn)) continue;
       if (cn.scope === 'adj' && !(oi === pi && adjKeys.has(ku))) continue;
       if (cn.scope === 'own' && oi !== pi) continue;
@@ -346,7 +407,7 @@ function applyReactions(s, ctx, pi, kt, rec) {
   for (const b of s.players[pi].borders || []) {
     if (!b.slots.includes(kt)) continue;
     if (b.lake) { apply(s, ctx, pi, 'money', 2 * mult(b), 'lake'); continue; }
-    for (const cn of BORDER_BY_ID[b.id].cond) if (cn.types.includes(tileOf(rec).type)) apply(s, ctx, pi, cn.res, cn.amt * mult(b), b.id);
+    for (const cn of BORDER_BY_ID[b.id].cond) if (borderCondMatch(cn, rec)) apply(s, ctx, pi, cn.res, cn.amt * mult(b), b.id);
   }
   const n = s.players.length;
   for (let d = 1; d < n; d++) {
@@ -364,7 +425,7 @@ export function validateAction(s, pi, a) {
   if (pi !== s.current) return '당신의 차례가 아닙니다';
   const p = s.players[pi];
   const cells = () => placementCells(s, pi);
-  const marketOk = (slot) => Number.isInteger(slot) && slot >= 0 && slot < 7 && s.market[slot];
+  const marketOk = (slot) => Number.isInteger(slot) && slot >= 0 && slot < s.market.length && s.market[slot];
   switch (a?.type) {
     case 'buy': {
       if (!marketOk(a.slot)) return '시장에 없는 타일입니다';
@@ -377,7 +438,7 @@ export function validateAction(s, pi, a) {
       const id = s.borderOpen[a.idx];
       if (!id) return '보더가 없습니다';
       if (!marketOk(a.discard)) return '버릴 시장 타일을 골라야 합니다';
-      const cost = (a.lake ? 0 : BORDER_BY_ID[id].cost) + MARKET_COSTS[a.discard];
+      const cost = (a.lake ? 0 : BORDER_BY_ID[id].cost) + mc(s)[a.discard];
       if (p.money < cost) return '자금이 부족합니다';
       if (!Number.isInteger(a.orient) || a.orient < 0 || a.orient > 11 || typeof a.c0 !== 'string') return '잘못된 위치';
       if (!borderShapeOk(p, borderShape(a.c0, a.orient), !!a.lake)) return a.lake ? '호수 보더는 다른 보더와 닿을 수 없고, 내 타일에 붙어야 합니다' : '보더를 놓을 수 없는 위치입니다';
@@ -395,7 +456,7 @@ export function validateAction(s, pi, a) {
       if (a.kind) {
         if (!BASIC_IDS.includes(a.kind) || s.basics[a.kind] <= 0) return '기본 타일이 남아있지 않습니다';
         if (!marketOk(a.discard)) return '버릴 시장 타일을 골라야 합니다';
-        if (p.money < MARKET_COSTS[a.discard]) return '자금이 부족합니다';
+        if (p.money < mc(s)[a.discard]) return '자금이 부족합니다';
         return null;
       }
       if (!marketOk(a.slot)) return '시장에 없는 타일입니다';
@@ -405,7 +466,7 @@ export function validateAction(s, pi, a) {
     }
     case 'lake': {
       if (!marketOk(a.slot)) return '시장에 없는 타일입니다';
-      if (p.money < MARKET_COSTS[a.slot]) return '자금이 부족합니다';
+      if (p.money < mc(s)[a.slot]) return '자금이 부족합니다';
       if (!cells().includes(a.cell)) return '놓을 수 없는 위치입니다';
       return null;
     }
@@ -413,7 +474,7 @@ export function validateAction(s, pi, a) {
       if (!BASIC_IDS.includes(a.kind) || s.basics[a.kind] <= 0) return '기본 타일이 남아있지 않습니다';
       if (a.cell && reqError(s, pi, a.cell, a.kind, p.money)) return reqError(s, pi, a.cell, a.kind, p.money);
       if (!marketOk(a.discard)) return '버릴 시장 타일을 골라야 합니다';
-      if (p.money < TILE_BY_ID[a.kind].cost + MARKET_COSTS[a.discard]) return '자금이 부족합니다';
+      if (p.money < TILE_BY_ID[a.kind].cost + mc(s)[a.discard]) return '자금이 부족합니다';
       if (!cells().includes(a.cell)) return '놓을 수 없는 위치입니다';
       return null;
     }
@@ -425,7 +486,7 @@ export function validateAction(s, pi, a) {
       if (!rec.lake && !rec.border && tileOf(rec).noInvest) return '이 타일에는 투자할 수 없습니다';
       if (!marketOk(a.discard)) return '버릴 시장 타일을 골라야 합니다';
       const cost = investCost(s, rec);
-      if (p.money < cost + MARKET_COSTS[a.discard]) return '자금이 부족합니다';
+      if (p.money < cost + mc(s)[a.discard]) return '자금이 부족합니다';
       return null;
     }
     default: return '알 수 없는 행동';
@@ -438,7 +499,8 @@ function reqError(s, pi, cell, tileId, money) {
   const p = s.players[pi];
   if (tl.req === 'pop2' && p.pop < 2) return '인구가 2 이상이어야 묘지를 지을 수 있습니다';
   if (tl.req === 'adjBorder' && !(p.borders || []).some((b) => !b.lake && b.slots.includes(cell))) return '검문소는 보더에 인접해야 합니다';
-  if (tl.req === 'adjLake' && !lakeCountAdj(p, cell)) return '호숫가 별장은 호수에 인접해야 합니다';
+  if (tl.req === 'adjLake' && !lakeCountAdj(p, cell)) return `${tl.ko}은(는) 호수에 인접해야 합니다`;
+  if (tl.req === 'essenUnique' && Object.values(p.tiles).some((r) => r.id === tileId && !r.lake)) return `${tl.ko}은(는) 구역당 1개만 지을 수 있습니다`;
   if (tileId === 'waterpur') {
     let ind = 1;
     for (const q of s.players) for (const r of Object.values(q.tiles)) if (isBuilding(r) && tileOf(r).type === 'I') ind++;
@@ -446,10 +508,21 @@ function reqError(s, pi, cell, tileId, money) {
   }
   return null;
 }
+const borderCondMatch = (cn, r) => !!r && (r.lake ? !!cn.lake : isBuilding(r) && (cn.star ? !!tileOf(r).star : cn.types.includes(tileOf(r).type)));
 const investCost = (s, rec) => (rec.lake ? 0 : rec.border ? BORDER_BY_ID[rec.id].cost : costOf(s, rec.id));
 
 function applySpecialOnPlace(s, ctx, pi, rec, times = 1) {
-  if (tileOf(rec).special === 'redistrict') {
+  const tl = tileOf(rec);
+  const p = s.players[pi];
+  if (tl.stars) moveStar(s, ctx, pi, tl.stars * times);
+  if (tl.special === 'dollarPerPop') apply(s, ctx, pi, 'money', p.pop * times, rec.id);
+  if (tl.special === 'police') p.nightImmune = true;
+  if (tl.special === 'nightCourt') {
+    const debt = p.nightDebt || {};
+    p.nightDebt = {}; p.nightImmune = true;
+    for (const res of ['money', 'income', 'rep', 'pop']) if (debt[res]) apply(s, ctx, pi, res, debt[res], 'nightCourt');
+  }
+  if (tl.special === 'redistrict') {
     const n = s.players.length;
     for (let t = 0; t < times; t++) {
       for (let d = 1; d < n; d++) changePop(s, ctx, (pi + d) % n, -5, 'redistrict', true);
@@ -477,8 +550,9 @@ function borderEffects(s, ctx, pi, b) {
   }
   const def = BORDER_BY_ID[b.id];
   for (const res of ['income', 'rep', 'money', 'pop']) if (def.imm[res]) apply(s, ctx, pi, res, def.imm[res], b.id);
+  if (def.stars) moveStar(s, ctx, pi, def.stars);
   for (const cn of def.cond) {
-    let n = b.slots.filter((sk) => { const r = p.tiles[sk]; return r && (r.lake ? cn.lake : isBuilding(r) && cn.types.includes(tileOf(r).type)); }).length;
+    const n = b.slots.filter((sk) => borderCondMatch(cn, p.tiles[sk])).length;
     if (n) apply(s, ctx, pi, cn.res, cn.amt * n, b.id);
   }
   return 0;
@@ -490,6 +564,7 @@ function placeBorder(s, ctx, pi, id, shape, lake) {
   p.borders.push(b);
   const lakeN = borderEffects(s, ctx, pi, b);
   if (b.lake) {
+    lakeCondReact(s, ctx, pi, b.slots);
     for (const u of Object.values(p.tiles)) {
       if (!isBuilding(u)) continue;
       for (const cn of tileOf(u).cond) if (cn.special === 'waterfront' && lakeN) apply(s, ctx, pi, 'money', cn.amt * lakeN * mult(u), u.id);
@@ -505,10 +580,20 @@ function placeBorder(s, ctx, pi, id, shape, lake) {
   });
 }
 
+function lakeCondReact(s, ctx, pi, keys) {
+  const p = s.players[pi];
+  for (const k of keys) {
+    const u = p.tiles[k];
+    if (!isBuilding(u)) continue;
+    for (const cn of tileOf(u).cond) if (cn.lakes) apply(s, ctx, pi, cn.res, cn.amt * mult(u), u.id);
+  }
+}
+
 function placeLake(s, ctx, pi, cell, tileId) {
   const p = s.players[pi];
   const rec = { id: tileId, lake: true, inv: false, order: 0 };
   p.tiles[cell] = rec;
+  lakeCondReact(s, ctx, pi, neighborsOf(cell));
   for (const bd of p.borders || []) {
     if (bd.lake || !bd.slots.includes(cell)) continue;
     for (const cn of BORDER_BY_ID[bd.id].cond) if (cn.lake) apply(s, ctx, pi, cn.res, cn.amt * mult(bd), bd.id);
@@ -535,7 +620,7 @@ export function performAction(s, pi, a) {
   const p = s.players[pi];
   const discard = (slot) => {
     const dId = s.market[slot];
-    pay(s, ctx, pi, MARKET_COSTS[slot], 'discard');
+    pay(s, ctx, pi, mc(s)[slot], 'discard');
     s.market[slot] = null; ctx.removedSlot = slot;
     return TILE_BY_ID[dId].ko;
   };
@@ -548,7 +633,7 @@ export function performAction(s, pi, a) {
     ctx.tile = id;
   } else if (a.type === 'lake') {
     const id = s.market[a.slot];
-    pay(s, ctx, pi, MARKET_COSTS[a.slot], 'cost');
+    pay(s, ctx, pi, mc(s)[a.slot], 'cost');
     s.market[a.slot] = null; ctx.removedSlot = a.slot;
     placeLake(s, ctx, pi, a.cell, id);
     ctx.text = `호수 조성 (${TILE_BY_ID[id].ko} 뒤집음)`;
@@ -661,7 +746,9 @@ export function endTurn(s, pi, ctx) {
   }
   if (s.endAfterTurn !== null && s.turn >= s.endAfterTurn) { finishGame(s); return; }
   s.turn++;
-  s.current = s.turn % s.players.length;
+  const n = s.players.length;
+  if (s.turn % n === 0 && s.exp?.five) starRoundEnd(s);
+  s.current = (s.order || [...Array(n).keys()])[s.turn % n];
 }
 
 export function applyAction(s, pid, a) {
@@ -716,16 +803,20 @@ function cluster(tiles, pred) {
 }
 
 export function metrics(p) {
-  const m = { R: 0, C: 0, I: 0, V: 0, X: 0, airports: 0, lakes: 0, offices: 0, incTiles: 0, borders: 0 };
+  const m = { R: 0, C: 0, I: 0, V: 0, X: 0, airports: 0, lakes: 0, offices: 0, incTiles: 0, borders: 0, restaurants: 0, starTiles: 0, nightTiles: 0 };
   for (const r of Object.values(p.tiles)) {
     if (r.lake) { m.lakes++; continue; }
     const tl = tileOf(r);
     m[tl.type]++;
     if (tl.icon === 'airport') m.airports++;
     if (tl.icon === 'office') m.offices++;
+    if (tl.icon === 'restaurant') m.restaurants++;
     if (tl.exp === 'inc') m.incTiles++;
+    if (tl.star) m.starTiles++;
+    if (tl.night) m.nightTiles++;
   }
-  for (const b of p.borders || []) { if (b.lake) m.lakes++; else m.borders++; }
+  for (const b of p.borders || []) { if (b.lake) m.lakes++; else { m.borders++; if (BORDER_BY_ID[b.id].star) m.starTiles++; } }
+  m.stars = p.starPos || 0;
   m.buildings = m.R + m.C + m.I + m.V;
   m.money = p.money; m.income = p.income; m.rep = p.rep; m.investments = 3 - p.investLeft;
   m.civicCluster = cluster(p.tiles, (r) => isBuilding(r) && tileOf(r).type === 'V');
@@ -745,14 +836,19 @@ function finishGame(s) {
   s.scoring = true;
   const rows = s.players.map((p) => ({ pi: 0, basePop: p.pop, goals: [], moneyPop: 0 }));
   s.players.forEach((p, i) => { rows[i].pi = i; });
+  // with 5★ a tie is won by the higher Star Track position (top of the stack first)
+  const winnerOf = (L) => {
+    if (L.unique !== null) return L.unique;
+    if (!s.exp?.five) return null;
+    return [...L.who].sort((a, b) => starRank(s.players[b]) - starRank(s.players[a]))[0];
+  };
   for (const gid of s.publicGoals) {
-    const L = goalLeaders(s, gid);
-    if (L.unique !== null) rows[L.unique].goals.push({ id: gid, bonus: GOAL_BY_ID[gid].bonus, public: true });
+    const w = winnerOf(goalLeaders(s, gid));
+    if (w !== null) rows[w].goals.push({ id: gid, bonus: GOAL_BY_ID[gid].bonus, public: true });
   }
   s.players.forEach((p, i) => {
     if (!p.privateGoal) return;
-    const L = goalLeaders(s, p.privateGoal);
-    if (L.unique === i) rows[i].goals.push({ id: p.privateGoal, bonus: GOAL_BY_ID[p.privateGoal].bonus, public: false });
+    if (winnerOf(goalLeaders(s, p.privateGoal)) === i) rows[i].goals.push({ id: p.privateGoal, bonus: GOAL_BY_ID[p.privateGoal].bonus, public: false });
   });
   // Law Office: each one (two if invested) wins one goal you are tied for
   s.players.forEach((p, i) => {
@@ -760,7 +856,7 @@ function finishGame(s) {
     for (const r of Object.values(p.tiles)) if (isBuilding(r) && tileOf(r).special === 'lawOffice') law += mult(r);
     if (!law) return;
     const tied = [...s.publicGoals, p.privateGoal].filter(Boolean)
-      .filter((gid) => { const L = goalLeaders(s, gid); return L.unique === null && L.who.includes(i); })
+      .filter((gid) => { const L = goalLeaders(s, gid); return L.unique === null && L.who.includes(i) && winnerOf(L) !== i && !rows[i].goals.some((g) => g.id === gid); })
       .sort((a, b) => GOAL_BY_ID[b].bonus - GOAL_BY_ID[a].bonus)
       .slice(0, law);
     for (const gid of tied) rows[i].goals.push({ id: gid, bonus: GOAL_BY_ID[gid].bonus, public: s.publicGoals.includes(gid), law: true });
@@ -784,7 +880,7 @@ function finishGame(s) {
 export function estimateTurnsLeft(s) {
   const n = s.players.length;
   if (s.endAfterTurn !== null) return Math.max(1, Math.floor((s.endAfterTurn - s.turn) / n) + 1);
-  const mixN = { 2: 6, 3: 9, 4: 12 }[n];
+  const mixN = { 2: 6, 3: 9, 4: 12, 5: 15 }[n];
   const draws = s.stacks.A.length + s.stacks.B.length + s.stacks.C.length - 4 - (mixN + 1) / 2;
   return Math.max(1, Math.round(draws / n) + 2);
 }

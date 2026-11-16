@@ -56,7 +56,7 @@ export class HostSession extends Emitter {
       this.lobby.seats.find((s) => s.id === this.myId).connected = true;
     } else {
       this.code = newRoomCode();
-      this.lobby = { seats: [{ id: this.myId, name, type: 'host', connected: true }], expansions: { inc: false } };
+      this.lobby = { seats: [{ id: this.myId, name, type: 'host', connected: true }], expansions: { inc: false, five: false, night: false, promo: false } };
       this.state = null;
     }
     if (online) this.openPeer();
@@ -114,7 +114,7 @@ export class HostSession extends Emitter {
         let seat = seats.find((s) => s.id === pid);
         if (!seat) {
           if (this.state) { conn.send({ t: 'error', msg: '이미 게임이 시작된 방입니다' }); setTimeout(() => conn.close(), 500); return; }
-          if (seats.length >= MAX_SEATS) { conn.send({ t: 'error', msg: '방이 가득 찼습니다' }); setTimeout(() => conn.close(), 500); return; }
+          if (seats.length >= this.maxSeats()) { conn.send({ t: 'error', msg: '방이 가득 찼습니다' }); setTimeout(() => conn.close(), 500); return; }
           seat = { id: pid, name: String(msg.name || '손님').slice(0, 16), type: 'human', connected: true };
           seats.push(seat);
           this.notify(`${seat.name} 님이 들어왔습니다`);
@@ -169,7 +169,7 @@ export class HostSession extends Emitter {
   sendChat(text) { this.chat(this.myId, text); }
 
   addBot(level) {
-    if (this.state || this.lobby.seats.length >= MAX_SEATS) return;
+    if (this.state || this.lobby.seats.length >= this.maxSeats()) return;
     const n = this.lobby.seats.filter((s) => s.type === 'bot').length;
     this.lobby.seats.push({ id: `bot-${rid(6)}`, name: botName(n, level), type: 'bot', level, connected: true });
     this.changed();
@@ -189,9 +189,11 @@ export class HostSession extends Emitter {
     this.notify(`${seat.name} 님 자리를 봇이 대신합니다`);
     this.changed();
   }
+  maxSeats() { return this.lobby.expansions?.five ? 5 : MAX_SEATS; }
   toggleExpansion(name) {
     if (this.state) return;
     this.lobby.expansions ??= {};
+    if (name === 'five' && this.lobby.expansions.five && this.lobby.seats.length > 4) { this.error = '5명일 때는 5★를 끌 수 없습니다. 먼저 한 명을 빼 주세요.'; this.emit(); return; }
     this.lobby.expansions[name] = !this.lobby.expansions[name];
     this.changed();
   }

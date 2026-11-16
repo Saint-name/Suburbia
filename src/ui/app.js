@@ -1,5 +1,5 @@
-import { TILE_BY_ID, TYPE_INFO, ICON_INFO, GOAL_BY_ID, METRIC_KO, MARKET_COSTS, BASIC_IDS, RED_LINES, describeTile, BORDER_BY_ID, BONUS_BY_ID, describeImmediate, describeCond } from '../engine/tiles.js';
-import { placementCells, previewAction, metrics, goalLeaders, borderCandidates, borderAt, costOf } from '../engine/engine.js';
+import { TILE_BY_ID, TYPE_INFO, ICON_INFO, GOAL_BY_ID, METRIC_KO, BASIC_IDS, RED_LINES, describeTile, BORDER_BY_ID, BONUS_BY_ID, describeImmediate, describeCond, EXPANSIONS, STAR_MAX, STAR_CAP, STAR_INCOME_AT, STAR_REP_AT } from '../engine/tiles.js';
+import { placementCells, previewAction, metrics, goalLeaders, borderCandidates, borderAt, costOf, mc } from '../engine/engine.js';
 import { setPlayerCount, borderCardSvg } from './tileface.js';
 import { BOT_LEVELS } from '../engine/bots.js';
 import { HostSession, ClientSession, savedHostGame, clearSavedHostGame, MAX_SEATS } from '../net/session.js';
@@ -124,14 +124,15 @@ function lobbyHtml(snap) {
             <span class="tag ${s.type}">${s.type === 'host' ? '방장' : s.type === 'bot' ? `봇 · ${BOT_LEVELS[s.level]}` : '플레이어'}</span>
             ${isHost && s.type !== 'host' ? `<button class="btn small ghost" data-act="kick" data-id="${esc(s.id)}">✕</button>` : ''}
           </li>`).join('')}
-        ${Array.from({ length: MAX_SEATS - seats.length }, () => '<li class="seat empty">빈 자리</li>').join('')}
+        ${Array.from({ length: Math.max(0, maxSeatsOf(snap) - seats.length) }, () => '<li class="seat empty">빈 자리</li>').join('')}
       </ul>
-      <label class="exp-toggle" data-act="${isHost ? 'toggle-inc' : 'noop'}"><input type="checkbox" ${snap.lobby?.expansions?.inc ? 'checked' : ''} ${isHost ? '' : 'disabled'}>
-        <span><b>Suburbia Inc. 확장</b><br><small class="muted">보더 12장 · 보너스/챌린지 · 새 건물 26장 · 목표 7종</small></span></label>
+      <div class="exp-list"><div class="exp-title">확장 ${isHost ? '<small class="muted">(방장이 선택)</small>' : ''}</div>
+      ${EXPANSIONS.map((e) => `<label class="exp-toggle" data-act="${isHost ? 'toggle-exp' : 'noop'}" data-exp="${e.id}"><input type="checkbox" ${snap.lobby?.expansions?.[e.id] ? 'checked' : ''} ${isHost ? '' : 'disabled'}>
+        <span><b>${esc(e.ko)}</b><br><small class="muted">${esc(e.desc)}</small></span></label>`).join('')}</div>
       ${isHost ? `
         <div class="bot-add">
           <span>봇 추가:</span>
-          ${Object.entries(BOT_LEVELS).map(([k, v]) => `<button class="btn small" data-act="add-bot" data-level="${k}" ${seats.length >= MAX_SEATS ? 'disabled' : ''}>${v}</button>`).join('')}
+          ${Object.entries(BOT_LEVELS).map(([k, v]) => `<button class="btn small" data-act="add-bot" data-level="${k}" ${seats.length >= maxSeatsOf(snap) ? 'disabled' : ''}>${v}</button>`).join('')}
         </div>
         <button class="btn primary big" data-act="start" ${seats.length < 2 ? 'disabled' : ''}>게임 시작 (${seats.length}명)</button>
         ${seats.length < 2 ? '<p class="hint">2명 이상이 필요합니다. 봇으로 채울 수 있어요.</p>' : ''}
@@ -141,6 +142,8 @@ function lobbyHtml(snap) {
     ${chatHtml(snap)}
   </div>`;
 }
+
+const maxSeatsOf = (snap) => (snap.lobby?.expansions?.five ? 5 : MAX_SEATS);
 
 function chatHtml(snap) {
   if (snap.online === false) return '';
@@ -173,7 +176,7 @@ function selAction(snap) {
 function previewActionFor(snap) {
   const s = ui.sel; const v = snap.view;
   if (!s || !s.cell) return null;
-  const free = (() => { for (let i = 6; i >= 0; i--) if (v.market[i]) return i; return 0; })();
+  const free = (() => { for (let i = v.market.length - 1; i >= 0; i--) if (v.market[i]) return i; return 0; })();
   if (s.src === 'border' && s.cands?.length) { const c = s.cands[s.ci]; return { type: 'border', idx: s.idx, c0: c.c0, orient: c.orient, lake: !!s.lake, discard: s.discard ?? free }; }
   if (s.src === 'redevelop' && s.kind) return { type: 'redevelop', cell: s.cell, kind: s.kind, discard: s.discard ?? free };
   if (s.src === 'basic') return { type: 'basic', kind: s.kind, cell: s.cell, discard: s.discard ?? free };
@@ -228,6 +231,7 @@ function gameHtml(snap) {
         <div class="panel popwrap"><h3>인구 보드 <small>모든 플레이어의 인구 위치 · 🚩레드라인</small></h3>${populationBoardSvg(v.players, RED_LINES)}</div>
       </section>
       <section class="col-side">
+        ${v.exp?.five ? starTrackHtml(snap) : ''}
         ${playersHtml(snap)}
         ${logHtml(snap)}
         ${chatHtml(snap)}
@@ -262,12 +266,12 @@ function marketHtml(snap, myTurn) {
   }
   const cards = v.market.map((id, i) => {
     if (!id) return '<div class="card empty">비어 있음</div>';
-    const total = costOf(v, id) + MARKET_COSTS[i];
+    const total = costOf(v, id) + mc(v)[i];
     const canBuy = me && me.money >= total;
     const selected = (s?.src === 'market' || s?.src === 'redevelop') && s.slot === i;
-    const disc = discardStep ? `<button class="btn small warn" data-act="discard" data-slot="${i}" ${me.money < extraCost + MARKET_COSTS[i] ? 'disabled' : ''}>${s.discard === i ? '✔ 버림' : `버리기 $${MARKET_COSTS[i]}`}</button>` : '';
+    const disc = discardStep ? `<button class="btn small warn" data-act="discard" data-slot="${i}" ${me.money < extraCost + mc(v)[i] ? 'disabled' : ''}>${s.discard === i ? '✔ 버림' : `버리기 $${mc(v)[i]}`}</button>` : '';
     return `<div class="card t-${TILE_BY_ID[id].type} ${selected ? 'selected' : ''} ${discardStep && s.discard === i ? 'discarding' : ''}" data-act="${discardStep ? 'discard' : 'pick-market'}" data-slot="${i}" title="${esc(TILE_BY_ID[id].ko + ' — ' + [describeTile(TILE_BY_ID[id]).imm, ...describeTile(TILE_BY_ID[id]).cond].filter(Boolean).join(' / '))}">
-      <div class="slot-cost">+$${MARKET_COSTS[i]}</div>
+      <div class="slot-cost">+$${mc(v)[i]}</div>
       ${miniTileSvg(id, false, 'card-hex')}
       <div class="card-en">${esc(TILE_BY_ID[id].en)}</div>
       <div class="card-desc">${[describeTile(TILE_BY_ID[id]).imm && `즉시 ${describeTile(TILE_BY_ID[id]).imm}`, ...describeTile(TILE_BY_ID[id]).cond].filter(Boolean).map(esc).join('<br>')}</div>
@@ -382,10 +386,10 @@ function actionBarHtml(snap, myTurn, me) {
   } else if (s.src === 'market') {
     const id = v.market[s.slot];
     const tl = TILE_BY_ID[id];
-    const total = costOf(v, id) + MARKET_COSTS[s.slot];
+    const total = costOf(v, id) + mc(v)[s.slot];
     body = `<div class="sel-line"><b>${esc(tl.ko)}</b>
       <button class="btn small ${s.mode === 'build' ? 'primary' : ''}" data-act="mode" data-mode="build" ${p.money >= total ? '' : 'disabled'}>건설 $${total}</button>
-      <button class="btn small ${s.mode === 'lake' ? 'primary' : ''}" data-act="mode" data-mode="lake" ${p.money >= MARKET_COSTS[s.slot] ? '' : 'disabled'}>호수로 만들기 $${MARKET_COSTS[s.slot]}</button>
+      <button class="btn small ${s.mode === 'lake' ? 'primary' : ''}" data-act="mode" data-mode="lake" ${p.money >= mc(v)[s.slot] ? '' : 'disabled'}>호수로 만들기 $${mc(v)[s.slot]}</button>
       <button class="btn small ghost" data-act="cancel">취소</button></div>
       ${s.mode ? `<div class="hint">${s.cell ? '' : '아래 내 구역에서 놓을 칸(+)을 고르세요.'}</div>` : '<div class="hint">건설할지, 뒤집어서 호수로 만들지 고르세요. 호수는 인접 건물마다 $2를 줍니다.</div>'}`;
   } else if (s.src === 'basic') {
@@ -452,6 +456,38 @@ function boardHtml(snap, me) {
   return boroughSvg(p, opts);
 }
 
+function starTrackHtml(snap) {
+  const v = snap.view;
+  const W = 340; const step = (W - 20) / (STAR_MAX + 1);
+  const cells = [];
+  for (let t = 0; t <= STAR_MAX; t++) {
+    const x = 10 + t * step;
+    cells.push(`<rect x="${x}" y="22" width="${step - 2}" height="40" rx="4" class="st-cell ${STAR_CAP[t] ? 'cap' : ''}"/>`);
+    cells.push(`<text x="${x + step / 2 - 1}" y="17" class="st-num">${t}</text>`);
+    if (STAR_CAP[t]) cells.push(`<text x="${x + step / 2 - 1}" y="76" class="st-cap">최대 ${STAR_CAP[t]}</text>`);
+  }
+  const line = (t, label, cls) => { const x = 10 + t * step - 2; return `<line x1="${x}" y1="18" x2="${x}" y2="66" class="st-line ${cls}"/><text x="${x}" y="90" class="st-lbl ${cls}">${label}</text>`; };
+  const tokens = [];
+  const byPos = {};
+  v.players.forEach((p, i) => { (byPos[p.starPos || 0] ??= []).push([p, i]); });
+  for (const [pos, list] of Object.entries(byPos)) {
+    list.sort((a, b) => (b[0].starStamp || 0) - (a[0].starStamp || 0));
+    list.forEach(([p], k) => {
+      const x = 10 + Number(pos) * step + step / 2 - 1; const y = 30 + k * 7;
+      tokens.push(`<polygon points="${starPts(x, y, 6)}" fill="${p.color}" stroke="#fff" stroke-width="1"><title>${esc(p.name)} ★${p.starPos}</title></polygon>`);
+    });
+  }
+  const order = (v.order || v.players.map((_, i) => i)).map((i) => `<span class="ord" style="--pc:${v.players[i].color}">${esc(v.players[i].name)}</span>`).join('<span class="muted">→</span>');
+  return `<div class="panel startrack"><h3>★ 스타 트랙 <small>라운드마다 최다 +1 인구 · 최소 -1 인구</small></h3>
+    <svg viewBox="0 0 ${W} 96" class="st-svg">${cells.join('')}${line(STAR_INCOME_AT, '수입+1', 'inc')}${line(STAR_REP_AT, '평판+1', 'rep')}${tokens.join('')}</svg>
+    <div class="order-row"><small class="muted">이번 라운드 턴 순서</small><div>${order}</div></div></div>`;
+}
+function starPts(x, y, r) {
+  const pts = [];
+  for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5; const rr = i % 2 ? r * 0.45 : r; pts.push(`${(x + rr * Math.cos(a)).toFixed(1)},${(y + rr * Math.sin(a)).toFixed(1)}`); }
+  return pts.join(' ');
+}
+
 function playersHtml(snap) {
   const v = snap.view;
   const seats = snap.lobby?.seats || [];
@@ -461,7 +497,7 @@ function playersHtml(snap) {
     const seat = seats.find((s) => s.id === p.id);
     const off = seat && seat.type !== 'bot' && seat.connected === false;
     return `<div class="pcard ${v.current === i && v.phase === 'play' ? 'active' : ''}" style="--pc:${p.color}" data-act="view" data-idx="${i}">
-      <div class="pc-head"><span class="dot"></span><b>${esc(p.name)}</b>${p.bot ? `<span class="tag bot">봇 ${BOT_LEVELS[p.bot] || ''}</span>` : ''}${off ? '<span class="tag off">연결 끊김</span>' : ''}${i === 0 ? '<span class="tag sp">선</span>' : ''}</div>
+      <div class="pc-head"><span class="dot"></span><b>${esc(p.name)}</b>${p.bot ? `<span class="tag bot">봇 ${BOT_LEVELS[p.bot] || ''}</span>` : ''}${off ? '<span class="tag off">연결 끊김</span>' : ''}${(v.order?.[0] ?? 0) === i ? '<span class="tag sp">선</span>' : ''}${v.exp?.five ? `<span class="tag star">★${p.starPos || 0}</span>` : ''}${p.nightImmune ? '<span class="tag night" title="나이트라이프 부정 효과 무시">🌙면역</span>' : ''}</div>
       <div class="stats">
         <div><small>자금</small><b>$${p.money}</b></div>
         <div><small>수입</small><b class="${p.income < 0 ? 'neg' : ''}">${sign(p.income)}</b></div>
@@ -552,6 +588,9 @@ function rulesHtml() {
   <p><b>효과 범위:</b> 「인접한」=맞닿은 타일, 「내 구역의」=내 타일 전부, 「모든 구역의」=모든 플레이어 타일, 「다른 구역의」=상대 타일만. 효과는 놓을 때 한 번 계산되고, 이후 조건에 맞는 타일이 지어질 때마다 다시 발동합니다.</p>
   <p><b>레드라인 🚩:</b> 인구가 레드라인을 넘을 때마다 수입과 평판이 1씩 줄어듭니다. 인구가 많을수록 레드라인이 촘촘해져요.</p>
   <p><b>Suburbia Inc. 확장 (켰을 때):</b> 보더 타일은 기본 타일처럼 사고 시장 타일 1장을 버립니다. 노란 선 쪽 홈 4칸에 닿은 타일에만 효과가 납니다. 뒷면으로 놓으면 무료 <b>호수 보더</b>가 됩니다. 보너스(수입)는 A 더미가, 챌린지(평판)는 B 더미가 바닥날 때 조건을 채운 모든 플레이어가 받습니다. 재개발 예정지는 다음 턴부터 시장·기본 타일로 무료 교체할 수 있습니다. 보더로 구역을 완전히 막을 수는 없습니다.</p>
+  <p><b>Suburbia 5★ (켰을 때):</b> ★ 타일의 금색 별만큼 스타 트랙을 전진합니다(3칸을 넘으면 수입 +1, 7칸을 넘으면 평판 +1, 오른쪽 끝 칸은 인원 제한). 라운드가 끝날 때마다 별이 가장 많은 사람은 인구 +1, 가장 적은 사람은 인구 -1을 받고, 트랙 순서대로 다음 라운드 턴 순서가 정해집니다. 목표가 동점이면 트랙이 앞선 사람이 가져갑니다. 최대 5명까지 플레이할 수 있습니다(시장 8칸).</p>
+  <p><b>Nightlife (켰을 때):</b> 🌙 타일의 부정 효과는 경찰서를 지으면 이후 무시하고, 야간 법원을 지으면 그동안 받은 부정 효과를 되돌립니다.</p>
+  <p><b>프로모:</b> 컨벤션 타일(🎲)은 모든 컨벤션 타일마다 평판 +1, 에센 타일은 구역당 1개만 지을 수 있습니다.</p>
   <p><b>종료:</b> C 더미에서 「1 More Round」가 나오면 그 라운드를 마치고 한 라운드를 더 한 뒤 끝납니다. 공개·비공개 목표(단독 1위만), 그리고 남은 돈 $5당 인구 1을 더합니다.</p>
   </div><button class="btn" data-act="close-modal">닫기</button>`;
 }
@@ -598,6 +637,7 @@ function handleAct(act, el) {
     case 'view': ui.viewIdx = Number(el.dataset.idx); if (ui.sel) ui.sel = null; break;
     case 'noop': return;
     case 'toggle-inc': session.toggleExpansion?.('inc'); return;
+    case 'toggle-exp': session.toggleExpansion?.(el.dataset.exp); return;
     case 'pick-border': {
       const idx = Number(el.dataset.idx);
       if (!myTurn) { ui.modal = { border: v.borderOpen[idx] }; break; }
@@ -623,8 +663,8 @@ function handleAct(act, el) {
       }
       if (ui.sel?.src === 'market' && ui.sel.slot === slot) { ui.modal = { tile: v.market[slot] }; break; }
       const p = v.players[me];
-      const total = costOf(v, v.market[slot]) + MARKET_COSTS[slot];
-      ui.sel = { src: 'market', slot, mode: p.money >= total ? 'build' : (p.money >= MARKET_COSTS[slot] ? 'lake' : null) };
+      const total = costOf(v, v.market[slot]) + mc(v)[slot];
+      ui.sel = { src: 'market', slot, mode: p.money >= total ? 'build' : (p.money >= mc(v)[slot] ? 'lake' : null) };
       break;
     }
     case 'pick-basic': {

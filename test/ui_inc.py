@@ -23,11 +23,20 @@ with sync_playwright() as p:
     pg.goto(URL)
     pg.fill('#name-input', '지훈')
     pg.click('[data-act=host-offline]')
-    pg.click('[data-act=toggle-inc]')
-    pg.click('[data-act=add-bot][data-level=normal]')
-    pg.click('[data-act=add-bot][data-level=hard]')
+    import sys as _s
+    ALL = len(_s.argv) > 1 and _s.argv[1] == 'all'
+    if ALL:
+        for e in ['inc', 'five', 'night', 'promo']:
+            pg.click(f'[data-act=toggle-exp][data-exp={e}]')
+        for lv in ['easy', 'normal', 'hard', 'normal']:
+            pg.click(f'[data-act=add-bot][data-level={lv}]')
+    else:
+        pg.click('[data-act=toggle-exp][data-exp=inc]')
+        pg.click('[data-act=add-bot][data-level=normal]')
+        pg.click('[data-act=add-bot][data-level=hard]')
     pg.screenshot(path=f'{OUT}/50_lobby_inc.png')
     assert pg.evaluate('window.__suburbia.session.snapshot().lobby.expansions.inc') is True
+    if ALL: assert pg.evaluate('window.__suburbia.session.snapshot().lobby.seats.length') == 5
     pg.click('[data-act=start]')
     pg.click('.goal-opt >> nth=0')
     pg.evaluate('window.__suburbia.session.botDelay = 40')
@@ -81,7 +90,7 @@ with sync_playwright() as p:
         turns += 1
         print('turn', turns, flush=True)
         if turns == 6:
-            pg.screenshot(path=f'{OUT}/53_midgame.png')
+            pg.screenshot(path=f'{OUT}/53_midgame{"_all" if ALL else ""}.png')
     pg.wait_for_selector('table.final', timeout=60000)
     pg.screenshot(path=f'{OUT}/54_final.png')
     log = pg.evaluate("window.__suburbia.session.snapshot().view.log.map(e=>e.text).filter(t=>/보너스|챌린지/.test(t))")

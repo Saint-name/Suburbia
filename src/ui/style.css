@@ -272,3 +272,31 @@ table.final td b { color: var(--accent); font-size: 1.15rem; }
 .exp-toggle input { width: 18px; height: 18px; }
 .law-tag { color: var(--accent); font-size: .75em; }
 .tB { background: rgba(139,94,52,.45); }
+
+/* 1.0.5: selection highlight in magenta so it never blends with tile colours (yellow/blue/green/grey) */
+:root { --sel: #ff2fb3; --sel-soft: rgba(255,47,179,.28); }
+.card.selected, .basic.selected, .bcard.selected { border-color: var(--sel); box-shadow: 0 0 0 3px var(--sel-soft); }
+.hex-pick { stroke: var(--sel); stroke-width: 5; }
+.hex-sel { stroke: var(--sel); stroke-width: 4; stroke-dasharray: 7 4; }
+.tile.picked .hex-sel { stroke: var(--sel); stroke-width: 6; stroke-dasharray: none; }
+.hex-slot { stroke: var(--sel); }
+.slot:hover .hex-slot { fill: var(--sel-soft); }
+.slot-plus { fill: var(--sel); }
+
+/* 1.0.5 expansions */
+.exp-list { margin: 10px 0; }
+.exp-title { font-weight: 700; margin-bottom: 4px; }
+.exp-toggle { margin: 6px 0; }
+.startrack .st-svg { width: 100%; height: auto; display: block; }
+.st-cell { fill: #2f2b6e; stroke: rgba(255,255,255,.2); }
+.st-cell.cap { fill: #3d2f6e; }
+.st-num { fill: var(--muted); font-size: 10px; text-anchor: middle; }
+.st-cap { fill: var(--muted); font-size: 7px; text-anchor: middle; }
+.st-line { stroke-width: 3; }
+.st-line.inc { stroke: #ffffff; } .st-line.rep { stroke: #ff8a8a; }
+.st-lbl { font-size: 9px; text-anchor: middle; font-weight: 800; }
+.st-lbl.inc { fill: #fff; } .st-lbl.rep { fill: #ff8a8a; }
+.order-row { display: flex; flex-direction: column; gap: 2px; font-size: .85rem; }
+.order-row .ord { color: var(--pc); font-weight: 700; margin: 0 3px; }
+.tag.star { background: #4a3b10; color: #ffcf33; }
+.tag.night { background: #2b2350; color: #c9b8ff; }

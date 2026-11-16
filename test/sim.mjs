@@ -5,7 +5,7 @@ const stats = { borders: 0, incTiles: 0, bonus: 0, challenge: 0 };
 
 function play(levels, seed) {
   const players = levels.map((lv, i) => ({ id: `p${i}`, name: `${lv}${i}`, bot: lv }));
-  const s = createGame({ players, seed, expansions: { inc: process.argv[3] === 'inc' } });
+  const s = createGame({ players, seed, expansions: process.argv[3] === 'all' ? { inc: true, five: true, night: true, promo: true } : { inc: process.argv[3] === 'inc' } });
   s.players.forEach((p, i) => chooseGoal(s, p.id, chooseBotGoal(s, i, p.bot)));
   let guard = 0; let maxMs = 0;
   while (s.phase === 'play') {
@@ -32,7 +32,7 @@ function play(levels, seed) {
 
 const N = Number(process.argv[2] || 30);
 const wins = {}; const pops = {}; let maxMs = 0; let turns = 0;
-const configs = [['easy', 'normal', 'hard'], ['hard', 'easy', 'normal'], ['normal', 'hard', 'easy'], ['easy', 'hard'], ['hard', 'normal'], ['normal', 'easy', 'hard', 'easy']];
+const configs = process.argv[3] === 'all' ? [['easy', 'normal', 'hard'], ['hard', 'normal'], ['normal', 'hard', 'easy', 'normal', 'easy'], ['hard', 'easy', 'normal', 'easy']] : [['easy', 'normal', 'hard'], ['hard', 'easy', 'normal'], ['normal', 'hard', 'easy'], ['easy', 'hard'], ['hard', 'normal'], ['normal', 'easy', 'hard', 'easy']];
 let games = 0;
 for (let g = 0; g < N; g++) {
   const levels = configs[g % configs.length];

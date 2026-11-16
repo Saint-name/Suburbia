@@ -1,7 +1,7 @@
 // Bots: easy / normal / hard
 import {
   placementCells, performAction, clone, tileCostAt, estimateTurnsLeft, redLinesBetween,
-  goalLeaders, neighborsOf, endTurn, borderCandidates, costOf, borderAt, openSpace,
+  goalLeaders, neighborsOf, endTurn, borderCandidates, costOf, borderAt, openSpace, mc,
 } from './engine.js';
 import { TILE_BY_ID, BASIC_IDS, MARKET_COSTS, GOAL_BY_ID, BORDER_BY_ID } from './tiles.js';
 
@@ -146,6 +146,15 @@ function evaluate(s, pi, level, T, progress, pool) {
   const moneyW = cf.mw0 + cf.mw1 * Math.min(1, (T - 1) / 10);
   let v = projectPlayer(s.players[pi], T, moneyW);
   if (cf.future) v += cf.future * futureValue(s, pi, T, moneyW, pool || upcomingPool(s));
+  // 5★: Star Track position → turn order, +1/-1 population each round, goal tie-breaks
+  if (s.exp?.five) {
+    const me = s.players[pi];
+    const rivals = s.players.filter((q, i) => i !== pi).map((q) => q.starPos);
+    const lead = me.starPos - Math.max(...rivals);
+    const last = me.starPos - Math.min(...rivals);
+    const rounds = Math.max(0, T - 1);
+    v += (lead > 0 ? 1 : lead === 0 ? 0.4 : 0) * rounds * 0.8 - (last < 0 ? 1 : 0) * rounds * 0.8 + me.starPos * 0.3;
+  }
   // keep room to build: borders can wall a borough in
   if (s.players[pi].borders?.length && T > 2) {
     const room = openSpace(s.players[pi]);
@@ -163,20 +172,20 @@ function evaluate(s, pi, level, T, progress, pool) {
 // ───────────── candidate generation ─────────────
 function cheapestDiscards(s, budget, k) {
   const slots = [];
-  for (let i = 0; i < 7; i++) if (s.market[i] && MARKET_COSTS[i] <= budget) slots.push(i);
-  return slots.sort((a, b) => MARKET_COSTS[a] - MARKET_COSTS[b] || b - a).slice(0, k);
+  for (let i = 0; i < s.market.length; i++) if (s.market[i] && mc(s)[i] <= budget) slots.push(i);
+  return slots.sort((a, b) => mc(s)[a] - mc(s)[b] || b - a).slice(0, k);
 }
 
 function candidates(s, pi, level) {
   const p = s.players[pi];
   const cells = placementCells(s, pi);
   const out = [];
-  for (let slot = 0; slot < 7; slot++) {
+  for (let slot = 0; slot < s.market.length; slot++) {
     if (!s.market[slot]) continue;
     const cost = tileCostAt(s, slot);
     if (p.money >= cost) for (const cell of cells) out.push({ type: 'buy', slot, cell });
     if (!cfgOf(level).greedy || p.money < 4) {
-      if (p.money >= MARKET_COSTS[slot]) {
+      if (p.money >= mc(s)[slot]) {
         for (const cell of cells) {
           const adj = neighborsOf(cell).filter((k) => p.tiles[k] && !p.tiles[k].lake).length;
           if (adj >= 2 || cfgOf(level).greedy) out.push({ type: 'lake', slot, cell });
@@ -187,19 +196,19 @@ function candidates(s, pi, level) {
   const disc = cheapestDiscards(s, Infinity, 1)[0];
   for (const kind of BASIC_IDS) {
     if (s.basics[kind] <= 0 || disc === undefined) continue;
-    if (p.money < TILE_BY_ID[kind].cost + MARKET_COSTS[disc]) continue;
+    if (p.money < TILE_BY_ID[kind].cost + mc(s)[disc]) continue;
     for (const cell of cells) out.push({ type: 'basic', kind, cell, discard: disc });
   }
   if (cfgOf(level).invest && p.investLeft > 0 && disc !== undefined) {
     for (const [cell, r] of Object.entries(p.tiles)) {
       if (r.inv || (!r.lake && TILE_BY_ID[r.id].noInvest)) continue;
       const cost = r.lake ? 0 : costOf(s, r.id);
-      if (p.money >= cost + MARKET_COSTS[disc]) out.push({ type: 'invest', cell, discard: disc });
+      if (p.money >= cost + mc(s)[disc]) out.push({ type: 'invest', cell, discard: disc });
     }
     for (const b of p.borders || []) {
       if (b.inv) continue;
       const cost = b.lake ? 0 : BORDER_BY_ID[b.id].cost;
-      if (p.money >= cost + MARKET_COSTS[disc]) out.push({ type: 'invest', cell: b.cells[0], discard: disc });
+      if (p.money >= cost + mc(s)[disc]) out.push({ type: 'invest', cell: b.cells[0], discard: disc });
     }
   }
   // Suburbia Inc. borders: keep only the most promising positions of each open border
@@ -208,7 +217,7 @@ function candidates(s, pi, level) {
     s.borderOpen.forEach((id, idx) => {
       if (!id) return; // unknown (hidden) border during look-ahead
       const def = BORDER_BY_ID[id];
-      if (p.money >= def.cost + MARKET_COSTS[disc]) {
+      if (p.money >= def.cost + mc(s)[disc]) {
         const scored = borderCandidates(s, pi, false).map((c) => {
           let v = 0;
           for (const cn of def.cond) {
@@ -220,7 +229,7 @@ function candidates(s, pi, level) {
         }).sort((x, y) => y[0] - x[0]).slice(0, 3);
         for (const [, c] of scored) out.push({ type: 'border', idx, c0: c.c0, orient: c.orient, lake: false, discard: disc });
       }
-      if (p.money >= MARKET_COSTS[disc]) {
+      if (p.money >= mc(s)[disc]) {
         const lakes = borderCandidates(s, pi, true).map((c) => [c.slots.filter((k) => p.tiles[k] && !p.tiles[k].lake).length, c])
           .sort((x, y) => y[0] - x[0]).slice(0, 1);
         for (const [n, c] of lakes) if (n >= 2) out.push({ type: 'border', idx, c0: c.c0, orient: c.orient, lake: true, discard: disc });
@@ -260,7 +269,7 @@ function bestDiscard(s, pi, level, a) {
       if (!r.ok) continue;
       gain = Math.max(gain, evaluate(c2, nx, 'normal', T, 0.5) - base);
     }
-    const harm = gain + (MARKET_COSTS[slot] === 0 ? 0.5 : -MARKET_COSTS[slot] * 0.2);
+    const harm = gain + (mc(s)[slot] === 0 ? 0.5 : -mc(s)[slot] * 0.2);
     if (harm > bestHarm) { bestHarm = harm; best = slot; }
   }
   return best;
@@ -323,7 +332,7 @@ export function botView(s, pi) {
 export function chooseBotAction(state, pi, level = 'normal') {
   const s = botView(state, pi);
   const T = estimateTurnsLeft(s);
-  const total = { 2: 22, 3: 20, 4: 19 }[s.players.length] || 20;
+  const total = { 2: 22, 3: 20, 4: 19, 5: 18 }[s.players.length] || 20;
   const progress = Math.max(0, Math.min(1, 1 - T / total));
   const pool = upcomingPool(s);
   const scored = scoreCandidates(s, pi, level, T, progress, pool, candidates(s, pi, level));
@@ -349,7 +358,7 @@ export function chooseBotAction(state, pi, level = 'normal') {
 // Last resort: the cheapest legal action there is (a lake at the cheapest market slot).
 export function anyLegalAction(s, pi) {
   const cells = placementCells(s, pi);
-  const slots = [0, 1, 2, 3, 4, 5, 6].filter((i) => s.market[i]).sort((x, y) => MARKET_COSTS[x] - MARKET_COSTS[y]);
+  const slots = s.market.map((_, i) => i).filter((i) => s.market[i]).sort((x, y) => mc(s)[x] - mc(s)[y]);
   for (const slot of slots) for (const cell of cells) {
     const a = { type: 'lake', slot, cell };
     if (performAction(clone(s), pi, a).ok) return a;

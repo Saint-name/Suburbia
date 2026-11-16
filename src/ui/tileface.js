@@ -8,8 +8,16 @@ const TYPE_EMBLEM = { R: '🏘️', C: '🏬', I: '🏭', V: '🏛️', X: '🚧
 let PLAYERS_N = 4;
 export const setPlayerCount = (n) => { PLAYERS_N = n || 4; };
 const costLabel = (tl) => (tl.costPerPlayer ? `$${tl.costPerPlayer * PLAYERS_N}` : `$${tl.cost}`);
-const SPECIAL_ROW = { lawOffice: '⚖️ 동점 목표 1개 획득', planner: '🔁 다음 턴부터 무료 교체', redistrict: '상대마다 인구 5 뺏기' };
-const REQ_ROW = { pop2: '인구 2↑ 필요', adjBorder: '보더 인접 필수', adjLake: '호수 인접 필수' };
+const SPECIAL_ROW = {
+  lawOffice: '⚖️ 동점 목표 1개 획득', planner: '🔁 다음 턴부터 무료 교체', redistrict: '상대마다 인구 5 뺏기',
+  dollarPerPop: '내 인구 1당 $1', police: '🌙 부정 효과 무시', nightCourt: '🌙 부정 효과 되돌림+무시',
+};
+const REQ_ROW = { pop2: '인구 2↑ 필요', adjBorder: '보더 인접 필수', adjLake: '호수 인접 필수', essenUnique: '구역당 1개' };
+const starPath = (x, y, r) => {
+  const pts = [];
+  for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5; const rr = i % 2 ? r * 0.45 : r; pts.push(`${(x + rr * Math.cos(a)).toFixed(1)},${(y + rr * Math.sin(a)).toFixed(1)}`); }
+  return pts.join(' ');
+};
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const sgn = (n) => (n > 0 ? `+${n}` : `${n}`);
 
@@ -22,10 +30,14 @@ function hexPts(cx, cy, r) {
 // ── resource icons (s = size scale) ──
 export function resIcon(res, amt, x, y, s = 1) {
   const neg = amt < 0;
-  const label = res === 'money' ? `$${Math.abs(amt)}` : sgn(amt);
+  const label = res === 'money' ? `${neg ? '-' : ''}$${Math.abs(amt)}` : sgn(amt);
   if (res === 'income') {
     return `<g class="ri"><circle cx="${x}" cy="${y}" r="${8.5 * s}" fill="${neg ? '#d93a3a' : '#fff'}" stroke="#222" stroke-width="${1.2 * s}"/>`
       + `<text x="${x}" y="${y + 3.4 * s}" font-size="${9.5 * s}" fill="${neg ? '#fff' : '#111'}">${label}</text></g>`;
+  }
+  if (res === 'star') {
+    return `<g class="ri"><polygon points="${starPath(x, y, 10 * s)}" fill="#ffcf33" stroke="#7a5a00" stroke-width="${1 * s}"/>`
+      + `<text x="${x}" y="${y + 3.2 * s}" font-size="${7.5 * s}" fill="#3b2a00">${label}</text></g>`;
   }
   if (res === 'rep') {
     return `<g class="ri"><rect x="${x - 8 * s}" y="${y - 8 * s}" width="${16 * s}" height="${16 * s}" rx="${2 * s}" fill="${neg ? '#d93a3a' : '#151515'}" stroke="#fff" stroke-width="${1 * s}"/>`
@@ -41,8 +53,8 @@ export function resIcon(res, amt, x, y, s = 1) {
       + `<text x="${x}" y="${y + 5.5 * k}" font-size="${8.5 * k}" fill="#fff">${label}</text></g>`;
   }
   // money
-  return `<g class="ri"><circle cx="${x}" cy="${y}" r="${9 * s}" fill="#f2c94c" stroke="#7a5a00" stroke-width="${1.2 * s}"/>`
-    + `<text x="${x}" y="${y + 3.3 * s}" font-size="${8.5 * s}" fill="#3b2a00">${label}</text></g>`;
+  return `<g class="ri"><circle cx="${x}" cy="${y}" r="${9 * s}" fill="${neg ? '#d93a3a' : '#f2c94c'}" stroke="${neg ? '#fff' : '#7a5a00'}" stroke-width="${1.2 * s}"/>`
+    + `<text x="${x}" y="${y + 3.3 * s}" font-size="${(neg ? 7 : 8.5) * s}" fill="${neg ? '#fff' : '#3b2a00'}">${label}</text></g>`;
 }
 
 function miniHex(type, x, y, s = 1) {
@@ -51,6 +63,12 @@ function miniHex(type, x, y, s = 1) {
 
 // targets of a condition, drawn left→right from x; returns [svg, width]
 function targets(cn, x, y, s) {
+  const glyph = (g, fill = '#fff') => [`<circle cx="${x + 7 * s}" cy="${y}" r="${7 * s}" fill="${fill}" stroke="#222" stroke-width="${0.8 * s}"/><text x="${x + 7 * s}" y="${y + 3.4 * s}" font-size="${8.5 * s}" font-weight="900">${g}</text>`, 15 * s];
+  if (cn.star) return [`<polygon points="${starPath(x + 7 * s, y, 7.5 * s)}" fill="#222" stroke="#ffcf33" stroke-width="${1 * s}"/>`, 15 * s];
+  if (cn.lakes) return [`<polygon points="${hexPts(x + 7 * s, y, 6.5 * s)}" fill="#4bb3e6" stroke="#fff" stroke-width="${0.8 * s}"/>`, 15 * s];
+  if (cn.night) return glyph('🌙', '#2b2350');
+  if (cn.con) return glyph('🎲');
+  if (cn.essen) return glyph('E', '#ffe27a');
   if (cn.border) {
     return [`<rect x="${x + 1 * s}" y="${y - 5 * s}" width="${16 * s}" height="${10 * s}" rx="${2 * s}" fill="#8b5e34" stroke="#fff" stroke-width="${0.8 * s}"/><path d="M${x + 3 * s},${y - 5 * s} l3,4 l3,-4 l3,4 l3,-4" fill="none" stroke="#fff" stroke-width="${0.8 * s}"/>`, 19 * s];
   }
@@ -117,7 +135,8 @@ export function tileFace(rec, cx, cy, R, opts = {}) {
     // name banner along the top edge
     const bh = 15 * s; const by = cy - H + 2.5 * s; const k3 = 1 / Math.sqrt(3);
     const tw = R - 4 * s; const bwB = tw + 2 * bh * k3;
-    out.push(`<polygon points="${cx - tw / 2},${by} ${cx + tw / 2},${by} ${cx + bwB / 2},${by + bh} ${cx - bwB / 2},${by + bh}" fill="${TYPE_DARK[tl.type]}" stroke="rgba(255,255,255,.5)" stroke-width="${0.8 * s}"/>`);
+    const bannerFill = tl.night ? '#3b1f6e' : tl.con ? '#7a1f3d' : TYPE_DARK[tl.type];
+    out.push(`<polygon points="${cx - tw / 2},${by} ${cx + tw / 2},${by} ${cx + bwB / 2},${by + bh} ${cx - bwB / 2},${by + bh}" fill="${bannerFill}" stroke="${tl.night ? '#c9b8ff' : 'rgba(255,255,255,.5)'}" stroke-width="${(tl.night ? 1.4 : 0.8) * s}"/>`);
     const fs = 10 * s;
     const est = [...tl.ko].reduce((a, ch) => a + (ch === ' ' ? 0.35 : /[A-Za-z&]/.test(ch) ? 0.62 : 1), 0) * fs;
     const maxW = bwB - 8 * s;
@@ -140,6 +159,10 @@ export function tileFace(rec, cx, cy, R, opts = {}) {
       let bx = cx + 0.6 * R; let by2 = cy + 0.06 * R;
       if (rows >= 2) { bx = imm.length ? cx + 0.6 * R - 20 * s : cx + 0.6 * R; by2 = cy - 0.3 * R; emX = cx - 9 * s; }
       out.push(`<circle cx="${bx}" cy="${by2}" r="${8 * s}" fill="#fff" stroke="#222" stroke-width="${0.8 * s}"/><text x="${bx}" y="${by2 + 3.6 * s}" font-size="${9.5 * s}" class="tf-t">${ICON_INFO[tl.icon].glyph}</text>`);
+    }
+    if (tl.stars) {
+      const sx = tl.req ? cx - 0.6 * R : cx - 0.36 * R; const sy = tl.req ? cy + 0.17 * R : cy - 0.36 * R;
+      out.push(`<polygon points="${starPath(sx, sy, 9.5 * s)}" fill="#ffcf33" stroke="#7a5a00" stroke-width="${1 * s}"/><text x="${sx}" y="${sy + 3.6 * s}" font-size="${8.5 * s}" fill="#3b2a00" class="tf-t b">${tl.stars}</text>`);
     }
     if (tl.req) out.push(`<text x="${cx}" y="${by + bh + 9 * s}" font-size="${7.5 * s}" fill="#ffe27a" class="tf-t b cost">${REQ_ROW[tl.req]}</text>`);
     const specialRow = tl.special && SPECIAL_ROW[tl.special];
@@ -174,6 +197,7 @@ export function borderLabel(id, lake, cx, cy, s = 1) {
     return out.join('');
   }
   out.push(`<text x="${cx}" y="${cy - 10 * s}" font-size="${11 * s}" fill="#fff" class="tf-t b cost">${esc(def.ko)}</text>`);
+  for (let i = 0; i < (def.stars || 0); i++) out.push(`<polygon points="${starPath(cx - 40 * s - i * 12 * s, cy - 14 * s, 6 * s)}" fill="#ffcf33" stroke="#7a5a00" stroke-width="${0.8 * s}"/>`);
   const imm = ['income', 'rep', 'pop', 'money'].filter((k) => def.imm[k]);
   let x = cx - (imm.length ? 34 : 0) * s;
   imm.forEach((k) => { out.push(`<g transform="translate(${x},${cy + 8 * s})">${resIcon(k, def.imm[k], 0, 0, s * 0.85)}</g>`); x += 20 * s; });
