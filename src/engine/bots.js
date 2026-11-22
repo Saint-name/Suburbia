@@ -1,11 +1,11 @@
-// Bots: easy / normal / hard
+// Bots: easy / normal / hard / expert
 import {
   placementCells, performAction, clone, tileCostAt, estimateTurnsLeft, redLinesBetween,
   goalLeaders, neighborsOf, endTurn, borderCandidates, costOf, borderAt, openSpace, mc,
 } from './engine.js';
 import { TILE_BY_ID, BASIC_IDS, MARKET_COSTS, GOAL_BY_ID, BORDER_BY_ID } from './tiles.js';
 
-export const BOT_LEVELS = { easy: '쉬움', normal: '보통', hard: '어려움' };
+export const BOT_LEVELS = { easy: '쉬움', normal: '보통', hard: '어려움', expert: '매우 어려움' };
 const BOT_NAMES = ['데일', '로봇 김', '알파 시장', '오토 박', '비트 리', '헥사', '심시티', '타일봇'];
 export const botName = (i, level) => `${BOT_NAMES[i % BOT_NAMES.length]} (${BOT_LEVELS[level]})`;
 
@@ -82,6 +82,11 @@ export const LEVEL_CFG = {
   easy: { greedy: true, noise: 6, invest: false, goals: 0, full: false, oppW: 0, mw0: 0.2, mw1: 0.25, deny: false },
   normal: { noise: 2.5, invest: true, goals: 0.6, full: false, oppW: 0, mw0: 0.2, mw1: 0.25, deny: false },
   hard: { noise: 0, invest: true, goals: 1, full: true, oppW: 0.15, mw0: 0.2, mw1: 0.25, deny: true, future: 1, lookahead: 6 },
+  // expert = hard's judgement + Monte-Carlo look-ahead over invented hidden worlds
+  expert: { noise: 0, invest: true, goals: 1, full: true, oppW: 0.15, mw0: 0.2, mw1: 0.25, deny: true, future: 1,
+    shortlist: 8, minSamples: 2, maxSamples: 40, budgetMs: 1500, playoutT: 3 },
+  // how the expert imagines its rivals' replies inside a simulation
+  normalSim: { noise: 0, invest: true, goals: 0.8, full: true, oppW: 0, mw0: 0.2, mw1: 0.25, deny: false, future: 1 },
 };
 const cfgOf = (level) => LEVEL_CFG[level] || LEVEL_CFG.normal;
 
@@ -324,13 +329,230 @@ export function botView(s, pi) {
   const v = clone(s);
   v.players.forEach((p, i) => { if (i !== pi) { p.privateGoal = null; p.goalOptions = []; } });
   v.stacks = { A: Array(s.stacks.A.length).fill(null), B: Array(s.stacks.B.length).fill(null), C: Array(s.stacks.C.length).fill(null) };
-  v.rng = 0; v.seed = 0;
+  v.rng = 0; v.seed = 0; v.log = []; v.lastAction = null; // (log is not needed and makes clones slow)
   if (v.borderDeck) v.borderDeck = v.borderDeck.map(() => null);
   return v;
 }
 
+// ───────────── expert: determinized Monte-Carlo look-ahead ─────────────
+// The expert never sees hidden information. For every sample it invents one possible
+// hidden world that is consistent with what is on the table (unseen tiles shuffled into
+// the stacks, "1 More Round" somewhere in its possible window, unknown borders, a
+// plausible secret goal for each rival), plays the candidate move, lets every rival
+// answer with a sensible policy, plays its own best follow-up, and scores the result.
+// The move with the best average over all invented worlds wins.
+const MORE_ROUND_ID = '1MR';
+function sampleRng(seed) {
+  let x = (seed >>> 0) || 1;
+  return () => { x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0; return x / 4294967296; };
+}
+function shuffleWith(r, arr) {
+  for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; }
+  return arr;
+}
+function determinize(v, pi, r) {
+  const d = clone(v);
+  const seen = {};
+  const see = (id) => { if (id) seen[id] = (seen[id] || 0) + 1; };
+  d.market.forEach(see);
+  for (const p of d.players) for (const t of Object.values(p.tiles)) see(t.id);
+  const n = d.players.length;
+  for (const L of ['A', 'B', 'C']) {
+    const len = d.stacks[L].length;
+    const hasMR = L === 'C' && !d.moreRoundRevealed && len > 0;
+    const need = len - (hasMR ? 1 : 0);
+    const pool = [];
+    const left = { ...seen };
+    for (const tl of Object.values(TILE_BY_ID)) {
+      if (tl.stack !== L || (tl.exp && !d.exp?.[tl.exp])) continue;
+      for (let i = 0; i < tl.count; i++) { if (left[tl.id] > 0) left[tl.id]--; else pool.push(tl.id); }
+    }
+    shuffleWith(r, pool);
+    const stack = pool.slice(0, need);
+    while (stack.length < need) stack.push(pool[stack.length % Math.max(1, pool.length)] || 'suburbs');
+    if (hasMR) {
+      const mixN = { 2: 6, 3: 9, 4: 12, 5: 15 }[n] || 9;
+      const hi = Math.max(0, len - 5);
+      const lo = Math.max(0, Math.min(hi, len - 4 - (mixN + 1)));
+      stack.splice(lo + Math.floor(r() * (hi - lo + 1)), 0, MORE_ROUND_ID);
+    }
+    d.stacks[L] = stack;
+  }
+  if (d.borderDeck?.length) {
+    const used = new Set([...(d.borderOpen || []), ...d.players.flatMap((p) => (p.borders || []).map((b) => b.id))]);
+    const free = shuffleWith(r, Object.values(BORDER_BY_ID)
+      .filter((b) => (!b.exp || d.exp?.[b.exp]) && !used.has(b.id)).map((b) => b.id));
+    d.borderDeck = d.borderDeck.map((_, i) => free[i] ?? null).filter(Boolean);
+  }
+  const mine = new Set([...(d.players[pi].goalOptions || []), d.players[pi].privateGoal]);
+  const goalPool = shuffleWith(r, Object.values(GOAL_BY_ID)
+    .filter((g) => (!g.exp || d.exp?.[g.exp]) && !d.publicGoals.includes(g.id) && !mine.has(g.id)).map((g) => g.id));
+  d.players.forEach((p, i) => { if (i !== pi) p.privateGoal = goalPool.pop() || null; });
+  d.rng = Math.floor(r() * 0x7fffffff) + 1;
+  return d;
+}
+
+// Candidate list limited to the most connected free cells and one position per border.
+function trimmedCandidates(c, i, level, nCells) {
+  const p = c.players[i];
+  const cells = placementCells(c, i)
+    .map((k) => [neighborsOf(k).filter((nk) => p.tiles[nk]).length, k])
+    .sort((a, b) => b[0] - a[0]).slice(0, nCells).map((x) => x[1]);
+  const keep = new Set(cells);
+  const borderSeen = new Set();
+  return candidates(c, i, level).filter((a) => {
+    if (a.type === 'invest') return true;
+    if (a.type === 'border') { const k = `${a.idx}${a.lake}`; if (borderSeen.has(k)) return false; borderSeen.add(k); return true; }
+    return keep.has(a.cell);
+  });
+}
+
+// Quick but sensible move for the simulated turns (best of a trimmed candidate list).
+function rolloutMove(c, i, level, pool) {
+  const T = estimateTurnsLeft(c);
+  const total = { 2: 22, 3: 20, 4: 19, 5: 18 }[c.players.length] || 20;
+  const progress = Math.max(0, Math.min(1, 1 - T / total));
+  const cands = trimmedCandidates(c, i, level, 4);
+  let best = null; let bestV = -Infinity; let bestCtx = null;
+  for (const a of cands) {
+    const c2 = clone(c);
+    const r = performAction(c2, i, a);
+    if (!r.ok) continue;
+    const v = evaluate(c2, i, level, T, progress, pool);
+    if (v > bestV) { bestV = v; best = { c: c2, ctx: r.ctx }; bestCtx = r.ctx; }
+  }
+  if (!best) {
+    const a = anyLegalAction(c, i);
+    const c2 = clone(c);
+    const r = performAction(c2, i, a);
+    if (!r.ok) return null;
+    best = { c: c2, ctx: r.ctx }; bestCtx = r.ctx;
+  }
+  endTurn(best.c, i, bestCtx);
+  return best.c;
+}
+
+function terminalValue(c, pi, oppW) {
+  const me = c.players[pi].pop;
+  let best = -Infinity;
+  c.players.forEach((p, i) => { if (i !== pi) best = Math.max(best, p.pop); });
+  return me - oppW * best + (me > best ? 4 : me === best ? 1.5 : 0);
+}
+
+// One simulated world: my move, then everyone else until my next turn, then my reply.
+function rolloutValue(d, pi, a, cf, pool, rivalLevel) {
+  let c = clone(d);
+  const r = performAction(c, pi, a);
+  if (!r.ok) return null;
+  endTurn(c, pi, r.ctx);
+  let guard = 0;
+  while (c.phase === 'play' && c.current !== pi && guard++ < 12) {
+    const nx = rolloutMove(c, c.current, rivalLevel, pool);
+    if (!nx) return null;
+    c = nx;
+  }
+  if (c.phase !== 'play') return terminalValue(c, pi, cf.oppW);
+  // my follow-up: best move judged by the full evaluation
+  const T = estimateTurnsLeft(c);
+  const total = { 2: 22, 3: 20, 4: 19, 5: 18 }[c.players.length] || 20;
+  const progress = Math.max(0, Math.min(1, 1 - T / total));
+  if (T <= (c.players.length <= 3 ? (cf.playoutT || 1) : 1)) {
+    // close to the end: play the rest of the game out, then score it exactly (goals included)
+    guard = 0;
+    while (c.phase === 'play' && guard++ < 40) {
+      const z = rolloutMove(c, c.current, c.current === pi ? 'expert' : rivalLevel, pool);
+      if (!z) break;
+      c = z;
+    }
+    return c.phase === 'over' ? terminalValue(c, pi, cf.oppW) : evaluate(c, pi, 'expert', 1, 1, pool);
+  }
+  let best = -Infinity;
+  for (const b of trimmedCandidates(c, pi, 'expert', 7)) {
+    const c2 = clone(c);
+    if (!performAction(c2, pi, b).ok) continue;
+    best = Math.max(best, evaluate(c2, pi, 'expert', T, progress, pool));
+  }
+  return best === -Infinity ? evaluate(c, pi, 'expert', T, progress, pool) : best;
+}
+
+function scoredEntry(s, pi, a) {
+  const c = clone(s);
+  const r = performAction(c, pi, a);
+  return { a, c, ctx: r.ctx };
+}
+
+function chooseExpertAction(s, pi, T, progress, pool) {
+  const cf = cfgOf('expert');
+  const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  const t0 = now();
+  const scored = scoreCandidates(s, pi, 'expert', T, progress, pool, candidates(s, pi, 'expert'));
+  if (scored.length <= 1) return scored[0]?.a || null;
+  // candidate shortlist (with the denial discard already chosen)
+  const seenKey = new Set();
+  const shortlist = [];
+  for (const e of scored) {
+    let a = e.a;
+    if (a.type === 'basic' || a.type === 'invest' || a.type === 'border') {
+      const sw = { ...a, discard: bestDiscard(s, pi, 'expert', a) };
+      if (performAction(clone(s), pi, sw).ok) a = sw;
+    }
+    const k = JSON.stringify(a);
+    if (seenKey.has(k)) continue;
+    seenKey.add(k);
+    shortlist.push({ a, sum: 0, n: 0, prior: e.v });
+    if (shortlist.length >= cf.shortlist) break;
+  }
+  const tShort = now() - t0;
+  const r = sampleRng((s.turn + 1) * 7919 + pi * 104729 + Math.floor(rnd() * 1e6));
+  const rivalLevel = 'normalSim';
+  let live = shortlist.slice();
+  let samples = 0;
+  let timeUp = false;
+  while (samples < cf.maxSamples && !timeUp) {
+    if (samples >= cf.minSamples && now() - t0 > cf.budgetMs) break;
+    const d = determinize(s, pi, r); // the same invented world for every candidate
+    const res = [];
+    for (const e of live) {
+      // hard cap: never think much longer than the budget, whatever the table size
+      if (now() - t0 > cf.budgetMs * 1.4) { timeUp = true; break; }
+      res.push([e, rolloutValue(d, pi, e.a, cf, pool, rivalLevel)]);
+    }
+    if (timeUp) break; // an unfinished sample would compare candidates unfairly: drop it
+    for (const [e, v] of res) { e.sum += v === null ? -1e6 : v; e.n++; }
+    samples++;
+    // successive halving: drop the weaker half after a few samples
+    if ((samples === 3 || samples === 7) && live.length > 3) {
+      live.sort((x, y) => y.sum / y.n - x.sum / x.n);
+      live = live.slice(0, Math.max(3, Math.ceil(live.length / 2)));
+    }
+  }
+  if (!samples) return null; // no time for even one full sample: let the hard bot decide
+  // With only a few samples the averages are noisy, so blend them with the hard bot's
+  // own two-step judgement (both centred, so only the differences between moves count).
+  const k = cf.prior ?? 4;
+  if (k > 0) {
+    for (const e of live) e.hv = e.hv ?? (0.5 * e.prior + 0.5 * followUpValue(scoredEntry(s, pi, e.a), pi, 'expert', T, progress, pool));
+    const mr = live.reduce((t, e) => t + e.sum / e.n, 0) / live.length;
+    const mh = live.reduce((t, e) => t + e.hv, 0) / live.length;
+    for (const e of live) e.score = (samples * (e.sum / e.n - mr) + k * (e.hv - mh)) / (samples + k);
+  } else for (const e of live) e.score = e.sum / e.n;
+  live.sort((x, y) => y.score - x.score);
+  if (typeof process !== 'undefined' && process.env?.EXPERT_DEBUG) console.log('samples', samples, 'shortlist', shortlist.length, 'T', T, 'pre', Math.round(tShort), 'ms', Math.round(now() - t0));
+  return live[0].a;
+}
+
 export function chooseBotAction(state, pi, level = 'normal') {
   const s = botView(state, pi);
+  if (level === 'expert') {
+    const T = estimateTurnsLeft(s);
+    const total = { 2: 22, 3: 20, 4: 19, 5: 18 }[s.players.length] || 20;
+    const progress = Math.max(0, Math.min(1, 1 - T / total));
+    const pool = upcomingPool(s);
+    const legal = (x) => x && performAction(clone(s), pi, x).ok;
+    const best = chooseExpertAction(s, pi, T, progress, pool);
+    if (legal(best)) return best;
+    return chooseBotAction(state, pi, 'hard');
+  }
   const T = estimateTurnsLeft(s);
   const total = { 2: 22, 3: 20, 4: 19, 5: 18 }[s.players.length] || 20;
   const progress = Math.max(0, Math.min(1, 1 - T / total));

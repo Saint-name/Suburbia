@@ -1,7 +1,7 @@
 {
   "name": "suburbia",
   "productName": "Suburbia",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "서버비아 - 온라인 멀티플레이 보드게임",
   "main": "main.js",
   "author": "Suburbia fan project",

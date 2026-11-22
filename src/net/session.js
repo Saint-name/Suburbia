@@ -225,7 +225,7 @@ export class HostSession extends Emitter {
       if (!r.ok) { console.warn('bot action failed', r.error); r = applyAction(s, p.id, anyLegalAction(s, s.current)); }
       this.botThinking = null;
       this.changed();
-    }, this.botDelay ?? 900);
+    }, this.botDelay ?? (p.bot === 'expert' ? 250 : 900)); // the expert already thinks ~1.5 s
   }
 
   changed() {

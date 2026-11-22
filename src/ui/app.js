@@ -140,7 +140,7 @@ function lobbyHtml(snap) {
       ${isHost ? `
         <div class="bot-add">
           <span>봇 추가:</span>
-          ${Object.entries(BOT_LEVELS).map(([k, v]) => `<button class="btn small" data-act="add-bot" data-level="${k}" ${seats.length >= maxSeatsOf(snap) ? 'disabled' : ''}>${v}</button>`).join('')}
+          ${Object.entries(BOT_LEVELS).map(([k, v]) => `<button class="btn small" data-act="add-bot" data-level="${k}" ${k === 'expert' ? 'title="가능한 숨은 상황을 여러 번 시뮬레이션해 수를 고릅니다 (한 수에 1~2초)"' : ''} ${seats.length >= maxSeatsOf(snap) ? 'disabled' : ''}>${v}</button>`).join('')}
         </div>
         <button class="btn primary big" data-act="start" ${seats.length < 2 ? 'disabled' : ''}>게임 시작 (${seats.length}명)</button>
         ${seats.length < 2 ? '<p class="hint">2명 이상이 필요합니다. 봇으로 채울 수 있어요.</p>' : ''}
