@@ -75,7 +75,7 @@ function targets(cn, x, y, s) {
     return [`<rect x="${x + 1 * s}" y="${y - 5 * s}" width="${16 * s}" height="${10 * s}" rx="${2 * s}" fill="#8b5e34" stroke="#fff" stroke-width="${0.8 * s}"/><path d="M${x + 3 * s},${y - 5 * s} l3,4 l3,-4 l3,4 l3,-4" fill="none" stroke="#fff" stroke-width="${0.8 * s}"/>`, 19 * s];
   }
   if (cn.icon) {
-    return [`<circle cx="${x + 7 * s}" cy="${y}" r="${7 * s}" fill="#fff" stroke="#222" stroke-width="${0.8 * s}"/><text x="${x + 7 * s}" y="${y + 3.6 * s}" font-size="${9 * s}">${ICON_INFO[cn.icon].glyph}</text>`, 15 * s];
+    return [`<circle cx="${x + 7 * s}" cy="${y}" r="${7 * s}" fill="#fff" stroke="#222" stroke-width="${0.8 * s}"/><text x="${x + 7 * s}" y="${y + 2.9 * s}" font-size="${7.4 * s}" text-anchor="middle">${ICON_INFO[cn.icon].glyph}</text>`, 15 * s];
   }
   if (cn.types) {
     let out = ''; let w = 0;
@@ -154,13 +154,18 @@ export function tileFace(rec, cx, cy, R, opts = {}) {
     }
     // immediate effect, top right
     const imm = ['income', 'rep', 'pop', 'money'].filter((k) => tl.imm[k]);
-    imm.forEach((k, i) => out.push(`<g transform="translate(${cx + 0.6 * R - i * 20 * s},${cy - 0.3 * R})">${resIcon(k, tl.imm[k], 0, 0, s)}</g>`));
-    // icon badge (restaurant / office / …)
+    // two effect rows + immediate effect + icon: stack the icon under the immediate effect (smaller)
+    const stack2 = tl.icon && rows === 2 && imm.length === 1;
+    const immY = stack2 ? cy - 0.37 * R : cy - 0.3 * R;
+    const immS = stack2 ? s * 0.82 : s;
+    imm.forEach((k, i) => out.push(`<g transform="translate(${cx + 0.6 * R - i * 20 * s},${immY})">${resIcon(k, tl.imm[k], 0, 0, immS)}</g>`));
+    // icon badge (restaurant / office / …): under the immediate effect, like the printed tiles
     let emX = cx;
     if (tl.icon) {
-      let bx = cx + 0.6 * R; let by2 = cy + 0.06 * R;
-      if (rows >= 2) { bx = imm.length ? cx + 0.6 * R - 20 * s : cx + 0.6 * R; by2 = cy - 0.3 * R; emX = cx - 9 * s; }
-      out.push(`<circle cx="${bx}" cy="${by2}" r="${8 * s}" fill="#fff" stroke="#222" stroke-width="${0.8 * s}"/><text x="${bx}" y="${by2 + 3.6 * s}" font-size="${9.5 * s}" class="tf-t">${ICON_INFO[tl.icon].glyph}</text>`);
+      let bx = cx + 0.6 * R; let by2 = cy + 0.06 * R; let br = 8 * s;
+      if (stack2) { by2 = immY + 15.5 * s; br = 6.8 * s; }
+      else if (rows >= 2) { bx = imm.length ? cx + 0.6 * R - 20 * s : cx + 0.6 * R; by2 = cy - 0.3 * R; emX = cx - 9 * s; }
+      out.push(`<circle cx="${bx}" cy="${by2}" r="${br}" fill="#fff" stroke="#222" stroke-width="${0.8 * s}"/><text x="${bx}" y="${by2 + br * 0.4}" font-size="${br * 1.05}" class="tf-t">${ICON_INFO[tl.icon].glyph}</text>`);
     }
     if (tl.stars) {
       const sx = tl.req ? cx - 0.6 * R : cx - 0.36 * R; const sy = tl.req ? cy + 0.17 * R : cy - 0.36 * R;
